@@ -1,15 +1,19 @@
 export { createDocument } from "./core/document.js";
 export { applyPatch, materialize, validatePatch } from "./core/apply.js";
 export { diffTrees, rebasePatch } from "./core/diff.js";
+export { createEditor, patchBuilder } from "./editor/builder.js";
 export {
   AmbiguousPositionError,
   DuplicateIdError,
+  EditorNodeMissingError,
+  EditorNodeTypeMismatchError,
   InvalidPointerError,
   InvalidRootError,
   InvalidSchemaError,
   MalformedPatchError,
   MalformedTreeError,
   MissingCodecError,
+  MissingPatchIdError,
   TreePatchError,
   UnsupportedPatchOperationError,
   UnsupportedTransformError,
@@ -68,3 +72,11 @@ export type {
   ValueAdapter,
   ValueCodec,
 } from "./core/types.js";
+export type {
+  CreateEditorOptions,
+  NodeEditor,
+  PatchBuilder,
+  PatchBuilderFieldOptions,
+  PatchBuilderOptions,
+  TreeEditor,
+} from "./editor/builder.js";

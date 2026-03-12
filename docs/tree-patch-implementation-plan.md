@@ -15,8 +15,8 @@ Use this file as the source of truth for implementation status:
 - [x] Phase 2 complete
 - [x] Phase 3 complete
 - [x] Phase 4 complete
-- [ ] Phase 5 complete
-- [ ] v1 complete
+- [x] Phase 5 complete
+- [x] v1 complete
 
 ## Cross-Phase Invariants
 
@@ -181,31 +181,31 @@ Goal: finish the ergonomics layer, type-safe authoring surface, codec-aware pers
 
 ### Implementation Checklist
 
-- [ ] Implement `patchBuilder()` with fluent patch construction.
-- [ ] Implement `createEditor()` with node-type-aware editing helpers.
-- [ ] Add compile-time-safe path typing for supported recursion depth, minimum five nested object levels.
-- [ ] Add compile-time-safe value typing based on selected path.
-- [ ] Implement builder-side guard generation for `expect` values and structural ops.
-- [ ] Make builder serialization codec-aware for persisted values and replacement subtrees.
-- [ ] Extend typed error coverage for builder-specific and editor-specific failure modes (unsupported transforms, malformed patches at build time).
-- [ ] Audit hot paths for lazy hash computation and incremental invalidation behavior.
-- [ ] Add end-to-end workflow tests based on the spec examples.
-- [ ] Audit public exports and documentation examples for consistency with implemented behavior.
+- [x] Implement `patchBuilder()` with fluent patch construction.
+- [x] Implement `createEditor()` with node-type-aware editing helpers.
+- [x] Add compile-time-safe path typing for supported recursion depth, minimum five nested object levels.
+- [x] Add compile-time-safe value typing based on selected path.
+- [x] Implement builder-side guard generation for `expect` values and structural ops.
+- [x] Make builder serialization codec-aware for persisted values and replacement subtrees.
+- [x] Extend typed error coverage for builder-specific and editor-specific failure modes (unsupported transforms, malformed patches at build time).
+- [x] Audit hot paths for lazy hash computation and incremental invalidation behavior.
+- [x] Add end-to-end workflow tests based on the spec examples.
+- [x] Audit public exports and documentation examples for consistency with implemented behavior.
 
 ### Acceptance Criteria
 
-- [ ] Compile-time fixtures reject invalid editor and builder paths.
-- [ ] Compile-time fixtures reject invalid value types for valid paths.
-- [ ] Builder-generated patches use `PersistedValue` correctly for JSON and codec-backed values.
-- [ ] Missing codecs for required persisted values fail deterministically at build or serialization time.
-- [ ] Repeated validate/apply cycles reuse caches without stale results leaking through public APIs.
-- [ ] Spec example workflow passes end to end.
-- [ ] Public API and runtime behavior match the v1 acceptance requirements from the spec.
+- [x] Compile-time fixtures reject invalid editor and builder paths.
+- [x] Compile-time fixtures reject invalid value types for valid paths.
+- [x] Builder-generated patches use `PersistedValue` correctly for JSON and codec-backed values.
+- [x] Missing codecs for required persisted values fail deterministically at build or serialization time.
+- [x] Repeated validate/apply cycles reuse caches without stale results leaking through public APIs.
+- [x] Spec example workflow passes end to end.
+- [x] Public API and runtime behavior match the v1 acceptance requirements from the spec.
 
 ## Definition Of Done For v1
 
-- [ ] Every phase is marked complete.
-- [ ] Every acceptance criterion in every phase is marked complete.
-- [ ] No required v1 behavior from the spec remains behind a TODO or placeholder implementation.
-- [ ] Public API, result types, and runtime semantics match the current specification.
-- [ ] Regression tests cover conflict detection, move semantics, subtree replacement, codec persistence, preview flows, and cache invalidation.
+- [x] Every phase is marked complete.
+- [x] Every acceptance criterion in every phase is marked complete.
+- [x] No required v1 behavior from the spec remains behind a TODO or placeholder implementation.
+- [x] Public API, result types, and runtime semantics match the current specification.
+- [x] Regression tests cover conflict detection, move semantics, subtree replacement, codec persistence, preview flows, and cache invalidation.
