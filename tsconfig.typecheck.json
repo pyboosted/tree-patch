@@ -1,0 +1,16 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "declaration": false,
+    "declarationMap": false,
+    "sourceMap": false,
+    "outDir": ".typecheck",
+    "rootDir": "."
+  },
+  "include": [
+    "src/**/*.ts",
+    "tests/typecheck/**/*.ts"
+  ]
+}
+
