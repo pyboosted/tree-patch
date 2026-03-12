@@ -11,7 +11,7 @@ Use this file as the source of truth for implementation status:
 
 ## Overall Status
 
-- [ ] Phase 1 complete
+- [x] Phase 1 complete
 - [ ] Phase 2 complete
 - [ ] Phase 3 complete
 - [ ] Phase 4 complete
@@ -50,35 +50,35 @@ Goal: establish the public types, persisted value model, normalization pipeline,
 
 ### Implementation Checklist
 
-- [ ] Set up the package skeleton, TypeScript config, `bun`-based dependency management, `bun` test scripts, and public export surface.
-- [ ] Define core public types for trees, nodes, patches, guards, persisted values, codecs, adapters, options, and result envelopes.
-- [ ] Implement `PersistedValue`, `JsonValue`, `EncodedValue`, `ValueCodec`, and `ValueAdapter`.
-- [ ] Implement schema registration for node types and per-path adapters keyed by JSON Pointer.
-- [ ] Implement `pathToPointer()` and `pointerToPath()`.
-- [ ] Implement runtime path parsing and validation for JSON Pointer paths relative to `node.attrs`.
-- [ ] Implement `createDocument()` with nested-tree normalization into indexed nodes.
-- [ ] Build required indexes: `parentById`, `positionById`, `depthById`, `rootId`.
-- [ ] Enforce duplicate ID detection and root invariants during document creation.
-- [ ] Establish immutable snapshot behavior for returned `IndexedTree` values.
-- [ ] Implement default deterministic equality and canonical serialization for JSON-compatible values.
-- [ ] Implement base node hash, subtree hash, and lazily addressable attribute-path hash primitives.
-- [ ] Recognize `atomicPaths` from `NodeRuntimeSpec` and treat them as opaque units in node hash computation.
-- [ ] Implement default revision token derivation from default subtree hash when `revision` is absent.
-- [ ] Implement `resolvePointer()` for runtime traversal of JSON Pointer paths against attribute objects.
-- [ ] Define typed programmer error classes (`TreePatchError` hierarchy) for malformed trees, duplicate IDs, invalid roots, missing codecs, and invalid pointers — distinct from `PatchConflict`.
+- [x] Set up the package skeleton, TypeScript config, `bun`-based dependency management, `bun` test scripts, and public export surface.
+- [x] Define core public types for trees, nodes, patches, guards, persisted values, codecs, adapters, options, and result envelopes.
+- [x] Implement `PersistedValue`, `JsonValue`, `EncodedValue`, `ValueCodec`, and `ValueAdapter`.
+- [x] Implement schema registration for node types and per-path adapters keyed by JSON Pointer.
+- [x] Implement `pathToPointer()` and `pointerToPath()`.
+- [x] Implement runtime path parsing and validation for JSON Pointer paths relative to `node.attrs`.
+- [x] Implement `createDocument()` with nested-tree normalization into indexed nodes.
+- [x] Build required indexes: `parentById`, `positionById`, `depthById`, `rootId`.
+- [x] Enforce duplicate ID detection and root invariants during document creation.
+- [x] Establish immutable snapshot behavior for returned `IndexedTree` values.
+- [x] Implement default deterministic equality and canonical serialization for JSON-compatible values.
+- [x] Implement base node hash, subtree hash, and lazily addressable attribute-path hash primitives.
+- [x] Recognize `atomicPaths` from `NodeRuntimeSpec` and treat them as opaque units in node hash computation.
+- [x] Implement default revision token derivation from default subtree hash when `revision` is absent.
+- [x] Implement `resolvePointer()` for runtime traversal of JSON Pointer paths against attribute objects.
+- [x] Define typed programmer error classes (`TreePatchError` hierarchy) for malformed trees, duplicate IDs, invalid roots, missing codecs, and invalid pointers — distinct from `PatchConflict`.
 
 ### Acceptance Criteria
 
-- [ ] `createDocument()` rejects malformed trees, duplicate IDs, and invalid root structure deterministically.
-- [ ] `pathToPointer(pointerToPath(x))` and `pointerToPath(pathToPointer(x))` round-trip for representative object and array paths.
-- [ ] JSON-compatible values work without codecs in persisted patches and guards.
-- [ ] Persisting a non-JSON value without a codec fails with a typed programmer error.
-- [ ] Default subtree hash includes node `id`, `type`, canonicalized `attrs`, and ordered child hashes.
-- [ ] Repeated hashing of equal documents produces the same output across runs.
-- [ ] Returned `IndexedTree` snapshots can be reused safely without observable mutation.
-- [ ] The project can install dependencies and run the test suite through `bun`.
-- [ ] Atomic paths marked in schema are treated as opaque units during hash computation; internal changes still affect the hash but nested decomposition is not attempted.
-- [ ] Typed programmer errors (`DuplicateIdError`, `InvalidRootError`, `MalformedTreeError`, `MissingCodecError`) are distinct from `PatchConflict` and carry a discriminant `code` field.
+- [x] `createDocument()` rejects malformed trees, duplicate IDs, and invalid root structure deterministically.
+- [x] `pathToPointer(pointerToPath(x))` and `pointerToPath(pathToPointer(x))` round-trip for representative object and array paths.
+- [x] JSON-compatible values work without codecs in persisted patches and guards.
+- [x] Persisting a non-JSON value without a codec fails with a typed programmer error.
+- [x] Default subtree hash includes node `id`, `type`, canonicalized `attrs`, and ordered child hashes.
+- [x] Repeated hashing of equal documents produces the same output across runs.
+- [x] Returned `IndexedTree` snapshots can be reused safely without observable mutation.
+- [x] The project can install dependencies and run the test suite through `bun`.
+- [x] Atomic paths marked in schema are treated as opaque units during hash computation; internal changes still affect the hash but nested decomposition is not attempted.
+- [x] Typed programmer errors (`DuplicateIdError`, `InvalidRootError`, `MalformedTreeError`, `MissingCodecError`) are distinct from `PatchConflict` and carry a discriminant `code` field.
 
 ## Phase 2 - Core Overlay Apply Engine
 
