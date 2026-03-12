@@ -14,7 +14,7 @@ Use this file as the source of truth for implementation status:
 - [x] Phase 1 complete
 - [x] Phase 2 complete
 - [x] Phase 3 complete
-- [ ] Phase 4 complete
+- [x] Phase 4 complete
 - [ ] Phase 5 complete
 - [ ] v1 complete
 
@@ -151,29 +151,29 @@ Goal: implement deterministic patch generation and patch revalidation on new bas
 
 ### Implementation Checklist
 
-- [ ] Implement `diffTrees()` entrypoint and deterministic empty-patch short-circuit using root subtree hashes.
-- [ ] Implement node matching by stable `id`.
-- [ ] Detect additions, removals, reorders, moves, and attribute changes.
-- [ ] Default source-backed deletion handling to `hideNode`.
-- [ ] Implement `unsupportedTransformPolicy` with `"replaceSubtree"` and `"error"` behavior.
-- [ ] Implement configurable subtree replacement thresholds.
-- [ ] Generate deterministic operation ordering from diff output.
-- [ ] Generate guards for field, move, hide/show, insert, and subtree replacement operations.
-- [ ] Implement `rebasePatch()` with sequential validation against `newBase`.
-- [ ] Return `appliedOpIds`, `skippedOpIds`, conflicts, preview snapshot, and rebased patch when possible.
-- [ ] Reuse subtree and path hashes to prune unchanged regions in diff and rebase.
+- [x] Implement `diffTrees()` entrypoint and deterministic empty-patch short-circuit using root subtree hashes.
+- [x] Implement node matching by stable `id`.
+- [x] Detect additions, removals, reorders, moves, and attribute changes.
+- [x] Default source-backed deletion handling to `hideNode`.
+- [x] Implement `unsupportedTransformPolicy` with `"replaceSubtree"` and `"error"` behavior.
+- [x] Implement configurable subtree replacement thresholds.
+- [x] Generate deterministic operation ordering from diff output.
+- [x] Generate guards for field, move, hide/show, insert, and subtree replacement operations.
+- [x] Implement `rebasePatch()` with sequential validation against `newBase`.
+- [x] Return `appliedOpIds`, `skippedOpIds`, conflicts, preview snapshot, and rebased patch when possible.
+- [x] Reuse subtree and path hashes to prune unchanged regions in diff and rebase.
 
 ### Acceptance Criteria
 
-- [ ] Equal inputs with equal options always produce identical diff output.
-- [ ] A source-backed node missing from `target` becomes `hideNode` by default.
-- [ ] Type change on the same node ID falls back to `replaceSubtree`.
-- [ ] Unsupported transforms that require moving a source-backed node under a patch-owned parent follow `unsupportedTransformPolicy`.
-- [ ] `unsupportedTransformPolicy: "replaceSubtree"` emits a deterministic replacement on the nearest viable source-backed ancestor.
-- [ ] `unsupportedTransformPolicy: "error"` returns a typed programmer error.
-- [ ] `rebasePatch()` preserves operations whose guards still pass and skips/report conflicts for the rest.
-- [ ] Rebase preview reflects only successful operations in order.
-- [ ] Unrelated source changes do not create conflicts for field-scoped overrides.
+- [x] Equal inputs with equal options always produce identical diff output.
+- [x] A source-backed node missing from `target` becomes `hideNode` by default.
+- [x] Type change on the same node ID falls back to `replaceSubtree`.
+- [x] Unsupported transforms that require moving a source-backed node under a patch-owned parent follow `unsupportedTransformPolicy`.
+- [x] `unsupportedTransformPolicy: "replaceSubtree"` emits a deterministic replacement on the nearest viable source-backed ancestor.
+- [x] `unsupportedTransformPolicy: "error"` returns a typed programmer error.
+- [x] `rebasePatch()` preserves operations whose guards still pass and skips/report conflicts for the rest.
+- [x] Rebase preview reflects only successful operations in order.
+- [x] Unrelated source changes do not create conflicts for field-scoped overrides.
 
 ## Phase 5 - Builder, Typed Editor, Hardening
 

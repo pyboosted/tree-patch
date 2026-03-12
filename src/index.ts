@@ -1,5 +1,6 @@
 export { createDocument } from "./core/document.js";
 export { applyPatch, materialize, validatePatch } from "./core/apply.js";
+export { diffTrees, rebasePatch } from "./core/diff.js";
 export {
   AmbiguousPositionError,
   DuplicateIdError,
@@ -11,6 +12,7 @@ export {
   MissingCodecError,
   TreePatchError,
   UnsupportedPatchOperationError,
+  UnsupportedTransformError,
   UnsupportedRuntimeValueError,
 } from "./core/errors.js";
 export { defaultJsonValueAdapter, decodePersistedValue, encodePersistedValue } from "./schema/adapters.js";

@@ -65,6 +65,16 @@ interface ExecutionContext<TTypes extends NodeTypeMap> {
 
 type OperationResult = { ok: true } | { ok: false; conflict: PatchConflict };
 
+export interface ExecutePatchInternalResult<TTypes extends NodeTypeMap> {
+  revision: RevisionStatus;
+  conflicts: PatchConflict[];
+  appliedOps: PatchOp[];
+  appliedOpIds: string[];
+  skippedOpIds: string[];
+  tree?: IndexedTree<TTypes>;
+  materialized?: MaterializedNode<TTypes>;
+}
+
 function toConflict(
   opId: string,
   kind: PatchConflict["kind"],
@@ -1325,7 +1335,7 @@ function buildMaterializedTree<TTypes extends NodeTypeMap>(
   return materialized;
 }
 
-function executePatch<TTypes extends NodeTypeMap>(
+export function executePatchInternal<TTypes extends NodeTypeMap>(
   source: IndexedTree<TTypes>,
   patch: TreePatch,
   options: {
@@ -1333,12 +1343,7 @@ function executePatch<TTypes extends NodeTypeMap>(
     includeHidden: boolean;
     produceTree: boolean;
   },
-): {
-  revision: RevisionStatus;
-  conflicts: PatchConflict[];
-  tree?: IndexedTree<TTypes>;
-  materialized?: MaterializedNode<TTypes>;
-} {
+): ExecutePatchInternalResult<TTypes> {
   assertPatchEnvelope(patch);
 
   const overlay = createOverlayState(source);
@@ -1349,20 +1354,28 @@ function executePatch<TTypes extends NodeTypeMap>(
     mode: options.mode,
   };
   const conflicts: PatchConflict[] = [];
+  const appliedOps: PatchOp[] = [];
+  const appliedOpIds: string[] = [];
+  const skippedOpIds: string[] = [];
 
   for (const op of patch.ops) {
     const result = applyOperation(context, op);
     if (!result.ok) {
       conflicts.push(result.conflict);
+      skippedOpIds.push(op.opId);
       if (options.mode === "atomic") {
         break;
       }
+      continue;
     }
+
+    appliedOps.push(op);
+    appliedOpIds.push(op.opId);
   }
 
   const revision = computeRevisionStatus(source as IndexedTree<NodeTypeMap>, patch);
   if (!options.produceTree || (conflicts.length > 0 && options.mode === "atomic")) {
-    return { revision, conflicts };
+    return { revision, conflicts, appliedOps, appliedOpIds, skippedOpIds };
   }
 
   const tree = buildSnapshotFromOverlay(overlay);
@@ -1376,6 +1389,9 @@ function executePatch<TTypes extends NodeTypeMap>(
   return {
     revision,
     conflicts,
+    appliedOps,
+    appliedOpIds,
+    skippedOpIds,
     tree,
     materialized,
   };
@@ -1386,7 +1402,7 @@ export function validatePatch<TTypes extends NodeTypeMap>(
   patch: TreePatch,
   options: ValidateOptions = {},
 ): ValidationResult {
-  const result = executePatch(source, patch, {
+  const result = executePatchInternal(source, patch, {
     mode: options.mode ?? "atomic",
     includeHidden: true,
     produceTree: false,
@@ -1411,7 +1427,7 @@ export function applyPatch<TTypes extends NodeTypeMap>(
   patch: TreePatch,
   options: ApplyOptions = {},
 ): ApplyResult<TTypes> {
-  const result = executePatch(source, patch, {
+  const result = executePatchInternal(source, patch, {
     mode: options.mode ?? "atomic",
     includeHidden: options.includeHidden ?? true,
     produceTree: true,

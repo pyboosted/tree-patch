@@ -8,7 +8,8 @@ export type TreePatchErrorCode =
   | "INVALID_SCHEMA"
   | "UNSUPPORTED_RUNTIME_VALUE"
   | "AMBIGUOUS_POSITION"
-  | "UNSUPPORTED_PATCH_OPERATION";
+  | "UNSUPPORTED_PATCH_OPERATION"
+  | "UNSUPPORTED_TRANSFORM";
 
 export interface TreePatchErrorOptions {
   cause?: unknown;
@@ -94,5 +95,11 @@ export class AmbiguousPositionError extends TreePatchError {
 export class UnsupportedPatchOperationError extends TreePatchError {
   constructor(message: string, options: TreePatchErrorOptions = {}) {
     super("UNSUPPORTED_PATCH_OPERATION", message, options);
+  }
+}
+
+export class UnsupportedTransformError extends TreePatchError {
+  constructor(message: string, options: TreePatchErrorOptions = {}) {
+    super("UNSUPPORTED_TRANSFORM", message, options);
   }
 }
