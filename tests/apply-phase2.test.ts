@@ -511,18 +511,15 @@ test("unknown codecs are rejected as programmer errors", () => {
   assert.throws(() => applyPatch(source, patch), MissingCodecError);
 });
 
-test("unsupported phase 3 operations are rejected as programmer errors", () => {
+test("unknown operation kinds are rejected as programmer errors", () => {
   const source = createSourceTree();
   const patch = {
     format: "tree-patch/v1",
     patchId: "unsupported",
     ops: [
       {
-        kind: "moveNode",
-        opId: "move",
-        nodeId: "legal",
-        newParentId: "section",
-        position: { atEnd: true },
+        kind: "explodeNode",
+        opId: "explode",
       },
     ],
   } as unknown as TreePatch;

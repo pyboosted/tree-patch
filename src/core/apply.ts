@@ -24,37 +24,37 @@ import type {
   ValidateOptions,
   ValidationResult,
 } from "./types.js";
-import {
-  AmbiguousPositionError,
-  InvalidPointerError,
-  MalformedPatchError,
-  MissingCodecError,
-  UnsupportedPatchOperationError,
-} from "./errors.js";
+import { InvalidPointerError, MissingCodecError } from "./errors.js";
 import { createReadonlyMapView, deepFreezePlainData, isPlainObject } from "./snapshot.js";
-import { attachTreeState, getTreeState, type MutableTreeState } from "./state.js";
+import { attachTreeState } from "./state.js";
 import { getPathHash, getSubtreeHash, joinJsonPointer } from "./hash.js";
 import {
   cloneJsonValue,
   cloneRuntimeValue,
-  decodePersistedValue,
   deepEqual,
   isEncodedValue,
-  isJsonValue,
 } from "../schema/adapters.js";
 import { parseJsonPointer, resolvePointer } from "../schema/pointers.js";
 import { getValueAdapterForPointer } from "../schema/schema.js";
-
-type SupportedPhase2Op = SetAttrOp | RemoveAttrOp | InsertNodeOp | ShowNodeOp | PatchOp;
-
-interface OverlayState<TTypes extends NodeTypeMap> extends MutableTreeState<TTypes> {
-  readonly rootId: NodeId;
-  readonly metadata?: Record<string, unknown>;
-  treeView: IndexedTree<TTypes>;
-  readonly dirtyNodeIds: Set<NodeId>;
-  readonly dirtyPathHashNodeIds: Set<NodeId>;
-  readonly dirtySubtreeNodeIds: Set<NodeId>;
-}
+import {
+  clearSubtreeState,
+  collectSubtreeNodeIds,
+  createOverlayState,
+  getNode,
+  getParentChildIds,
+  invalidateNodeCaches,
+  invalidateSubtreeHashes,
+  reindexSubtreeDepths,
+  resolvePositionAgainstChildIds,
+  setNode,
+  type OverlayState,
+  updateSiblingPositions,
+} from "./overlay.js";
+import {
+  assertPatchEnvelope,
+  collectSerializedNodeIds,
+  normalizePosition,
+} from "./patch-validation.js";
 
 interface ExecutionContext<TTypes extends NodeTypeMap> {
   readonly source: IndexedTree<TTypes>;
@@ -117,445 +117,6 @@ function computeRevisionStatus(
 
   return revision;
 }
-
-function validatePersistedValueShape(value: unknown, location: string): void {
-  if (isEncodedValue(value as PersistedValue)) {
-    return;
-  }
-
-  if (isJsonValue(value)) {
-    return;
-  }
-
-  throw new MalformedPatchError(`${location} must be JSON-serializable or an encoded persisted value.`, {
-    details: { location },
-  });
-}
-
-function assertSerializedPatchNode(
-  node: unknown,
-  location: string,
-  seenIds: Set<string>,
-): asserts node is SerializedPatchNode {
-  if (!node || typeof node !== "object" || Array.isArray(node)) {
-    throw new MalformedPatchError(`${location} must be a serialized patch node object.`, {
-      details: { location },
-    });
-  }
-
-  const candidate = node as Record<string, unknown>;
-  if (typeof candidate.id !== "string") {
-    throw new MalformedPatchError(`${location}.id must be a string.`, {
-      details: { location },
-    });
-  }
-  if (typeof candidate.type !== "string") {
-    throw new MalformedPatchError(`${location}.type must be a string.`, {
-      details: { location },
-    });
-  }
-  if (!("attrs" in candidate)) {
-    throw new MalformedPatchError(`${location}.attrs is required.`, {
-      details: { location },
-    });
-  }
-  if (!Array.isArray(candidate.children)) {
-    throw new MalformedPatchError(`${location}.children must be an array.`, {
-      details: { location },
-    });
-  }
-
-  if (seenIds.has(candidate.id)) {
-    throw new MalformedPatchError(
-      `Serialized patch subtree at ${location} reuses node id "${candidate.id}".`,
-      {
-        details: { location, nodeId: candidate.id },
-      },
-    );
-  }
-
-  seenIds.add(candidate.id);
-  validatePersistedValueShape(candidate.attrs, `${location}.attrs`);
-
-  candidate.children.forEach((child, index) => {
-    assertSerializedPatchNode(child, `${location}.children[${index}]`, seenIds);
-  });
-}
-
-function normalizePosition(
-  position: unknown,
-  location: string,
-): ChildPosition | undefined {
-  if (position === undefined) {
-    return undefined;
-  }
-
-  if (!position || typeof position !== "object" || Array.isArray(position)) {
-    throw new MalformedPatchError(`${location} must be an object when provided.`, {
-      details: { location },
-    });
-  }
-
-  const entries = Object.entries(position as Record<string, unknown>).filter(
-    ([, value]) => value !== undefined,
-  );
-  if (entries.length !== 1) {
-    throw new AmbiguousPositionError(
-      `${location} must contain exactly one of beforeId, afterId, atStart, or atEnd.`,
-      {
-        details: { location, providedKeys: Object.keys(position as Record<string, unknown>) },
-      },
-    );
-  }
-
-  const [key, value] = entries[0]!;
-  switch (key) {
-    case "beforeId":
-      if (typeof value !== "string") {
-        throw new MalformedPatchError(`${location}.beforeId must be a string.`, {
-          details: { location },
-        });
-      }
-      return { beforeId: value };
-    case "afterId":
-      if (typeof value !== "string") {
-        throw new MalformedPatchError(`${location}.afterId must be a string.`, {
-          details: { location },
-        });
-      }
-      return { afterId: value };
-    case "atStart":
-      if (value !== true) {
-        throw new MalformedPatchError(`${location}.atStart must be true when provided.`, {
-          details: { location },
-        });
-      }
-      return { atStart: true };
-    case "atEnd":
-      if (value !== true) {
-        throw new MalformedPatchError(`${location}.atEnd must be true when provided.`, {
-          details: { location },
-        });
-      }
-      return { atEnd: true };
-    default:
-      throw new AmbiguousPositionError(
-        `${location} contains unsupported key "${key}".`,
-        {
-          details: { location, key },
-        },
-      );
-  }
-}
-
-function assertGuard(guard: unknown, location: string): asserts guard is Guard {
-  if (!guard || typeof guard !== "object" || Array.isArray(guard)) {
-    throw new MalformedPatchError(`${location} must be a guard object.`, {
-      details: { location },
-    });
-  }
-
-  const candidate = guard as Record<string, unknown>;
-  if (typeof candidate.kind !== "string") {
-    throw new MalformedPatchError(`${location}.kind must be a string.`, {
-      details: { location },
-    });
-  }
-
-  switch (candidate.kind) {
-    case "nodeExists":
-    case "nodeAbsent":
-      if (typeof candidate.nodeId !== "string") {
-        throw new MalformedPatchError(`${location}.nodeId must be a string.`, {
-          details: { location },
-        });
-      }
-      return;
-    case "nodeTypeIs":
-      if (typeof candidate.nodeId !== "string" || typeof candidate.nodeType !== "string") {
-        throw new MalformedPatchError(`${location} must include string nodeId and nodeType.`, {
-          details: { location },
-        });
-      }
-      return;
-    case "attrEquals":
-      if (typeof candidate.nodeId !== "string" || typeof candidate.path !== "string") {
-        throw new MalformedPatchError(`${location} must include string nodeId and path.`, {
-          details: { location },
-        });
-      }
-      parseJsonPointer(candidate.path);
-      validatePersistedValueShape(candidate.value, `${location}.value`);
-      return;
-    case "attrHash":
-      if (
-        typeof candidate.nodeId !== "string" ||
-        typeof candidate.path !== "string" ||
-        typeof candidate.hash !== "string"
-      ) {
-        throw new MalformedPatchError(`${location} must include string nodeId, path, and hash.`, {
-          details: { location },
-        });
-      }
-      parseJsonPointer(candidate.path);
-      return;
-    case "subtreeHash":
-      if (typeof candidate.nodeId !== "string" || typeof candidate.hash !== "string") {
-        throw new MalformedPatchError(`${location} must include string nodeId and hash.`, {
-          details: { location },
-        });
-      }
-      return;
-    case "parentIs":
-      if (
-        typeof candidate.nodeId !== "string" ||
-        (candidate.parentId !== null && typeof candidate.parentId !== "string")
-      ) {
-        throw new MalformedPatchError(`${location} must include string nodeId and string|null parentId.`, {
-          details: { location },
-        });
-      }
-      return;
-    case "positionAfter":
-      if (typeof candidate.nodeId !== "string" || typeof candidate.afterId !== "string") {
-        throw new MalformedPatchError(`${location} must include string nodeId and afterId.`, {
-          details: { location },
-        });
-      }
-      return;
-    case "positionBefore":
-      if (typeof candidate.nodeId !== "string" || typeof candidate.beforeId !== "string") {
-        throw new MalformedPatchError(`${location} must include string nodeId and beforeId.`, {
-          details: { location },
-        });
-      }
-      return;
-    default:
-      throw new UnsupportedPatchOperationError(`Unsupported guard kind "${candidate.kind}".`, {
-        details: { location, kind: candidate.kind },
-      });
-  }
-}
-
-function assertPatchOp(op: unknown, index: number): asserts op is PatchOp {
-  const location = `patch.ops[${index}]`;
-  if (!op || typeof op !== "object" || Array.isArray(op)) {
-    throw new MalformedPatchError(`${location} must be an operation object.`, {
-      details: { location },
-    });
-  }
-
-  const candidate = op as Record<string, unknown>;
-  if (typeof candidate.kind !== "string") {
-    throw new MalformedPatchError(`${location}.kind must be a string.`, {
-      details: { location },
-    });
-  }
-  if (typeof candidate.opId !== "string") {
-    throw new MalformedPatchError(`${location}.opId must be a string.`, {
-      details: { location },
-    });
-  }
-
-  if (candidate.guards !== undefined) {
-    if (!Array.isArray(candidate.guards)) {
-      throw new MalformedPatchError(`${location}.guards must be an array when provided.`, {
-        details: { location },
-      });
-    }
-    candidate.guards.forEach((guard, guardIndex) => {
-      assertGuard(guard, `${location}.guards[${guardIndex}]`);
-    });
-  }
-
-  switch (candidate.kind) {
-    case "setAttr":
-      if (
-        typeof candidate.nodeId !== "string" ||
-        typeof candidate.path !== "string"
-      ) {
-        throw new MalformedPatchError(`${location} must include string nodeId and path.`, {
-          details: { location },
-        });
-      }
-      parseJsonPointer(candidate.path);
-      validatePersistedValueShape(candidate.value, `${location}.value`);
-      return;
-    case "removeAttr":
-      if (
-        typeof candidate.nodeId !== "string" ||
-        typeof candidate.path !== "string"
-      ) {
-        throw new MalformedPatchError(`${location} must include string nodeId and path.`, {
-          details: { location },
-        });
-      }
-      parseJsonPointer(candidate.path);
-      return;
-    case "hideNode":
-    case "showNode":
-      if (typeof candidate.nodeId !== "string") {
-        throw new MalformedPatchError(`${location}.nodeId must be a string.`, {
-          details: { location },
-        });
-      }
-      return;
-    case "insertNode": {
-      if (typeof candidate.parentId !== "string") {
-        throw new MalformedPatchError(`${location}.parentId must be a string.`, {
-          details: { location },
-        });
-      }
-      normalizePosition(candidate.position, `${location}.position`);
-      assertSerializedPatchNode(candidate.node, `${location}.node`, new Set<string>());
-      return;
-    }
-    case "moveNode":
-    case "replaceSubtree":
-    case "removeNode":
-      throw new UnsupportedPatchOperationError(
-        `Patch operation "${candidate.kind}" is not implemented in Phase 2.`,
-        {
-          details: { location, kind: candidate.kind },
-        },
-      );
-    default:
-      throw new UnsupportedPatchOperationError(`Unsupported patch operation kind "${candidate.kind}".`, {
-        details: { location, kind: candidate.kind },
-      });
-  }
-}
-
-function assertPatchEnvelope(patch: unknown): asserts patch is TreePatch {
-  if (!patch || typeof patch !== "object" || Array.isArray(patch)) {
-    throw new MalformedPatchError("Patch must be an object.", {
-      details: { patch },
-    });
-  }
-
-  const candidate = patch as Record<string, unknown>;
-  if (candidate.format !== "tree-patch/v1") {
-    throw new MalformedPatchError('Patch format must be "tree-patch/v1".', {
-      details: { format: candidate.format },
-    });
-  }
-  if (typeof candidate.patchId !== "string") {
-    throw new MalformedPatchError("Patch patchId must be a string.", {
-      details: { patchId: candidate.patchId },
-    });
-  }
-  if (candidate.baseRevision !== undefined && typeof candidate.baseRevision !== "string") {
-    throw new MalformedPatchError("Patch baseRevision must be a string when provided.", {
-      details: { baseRevision: candidate.baseRevision },
-    });
-  }
-  if (!Array.isArray(candidate.ops)) {
-    throw new MalformedPatchError("Patch ops must be an array.", {
-      details: { ops: candidate.ops },
-    });
-  }
-
-  const seenOpIds = new Set<string>();
-  candidate.ops.forEach((op, index) => {
-    assertPatchOp(op, index);
-    if (seenOpIds.has(op.opId)) {
-      throw new MalformedPatchError(`Duplicate opId "${op.opId}" detected in patch.`, {
-        details: { opId: op.opId },
-      });
-    }
-    seenOpIds.add(op.opId);
-  });
-}
-
-function cloneCache(cache: MutableTreeState<NodeTypeMap>["cache"]): MutableTreeState<NodeTypeMap>["cache"] {
-  return {
-    nodeHashById: new Map(cache.nodeHashById),
-    subtreeHashById: new Map(cache.subtreeHashById),
-    pathHashByNodeId: new Map(
-      [...cache.pathHashByNodeId].map(([nodeId, hashes]) => [nodeId, new Map(hashes)]),
-    ),
-  };
-}
-
-function createOverlayState<TTypes extends NodeTypeMap>(
-  source: IndexedTree<TTypes>,
-): OverlayState<TTypes> {
-  const sourceState = getTreeState(source);
-  const state = {
-    ownership: sourceState.ownership,
-    schema: sourceState.schema,
-    nodes: new Map(sourceState.nodes),
-    index: {
-      parentById: new Map(sourceState.index.parentById),
-      positionById: new Map(sourceState.index.positionById),
-      depthById: new Map(sourceState.index.depthById),
-    },
-    cache: cloneCache(sourceState.cache) as MutableTreeState<TTypes>["cache"],
-    explicitHidden: new Set(sourceState.explicitHidden),
-    patchOwned: new Set(sourceState.patchOwned),
-    rootId: source.rootId,
-    metadata: source.metadata,
-    dirtyNodeIds: new Set<NodeId>(),
-    dirtyPathHashNodeIds: new Set<NodeId>(),
-    dirtySubtreeNodeIds: new Set<NodeId>(),
-  } as OverlayState<TTypes>;
-
-  const treeView = {
-    rootId: source.rootId,
-    nodes: state.nodes,
-    index: {
-      parentById: state.index.parentById,
-      positionById: state.index.positionById,
-      depthById: state.index.depthById,
-    },
-    cache: {
-      nodeHashById: state.cache.nodeHashById,
-      subtreeHashById: state.cache.subtreeHashById,
-      pathHashByNodeId: state.cache.pathHashByNodeId,
-    },
-  } as IndexedTree<TTypes>;
-
-  if (source.revision !== undefined) {
-    treeView.revision = source.revision;
-  }
-  if (source.metadata !== undefined) {
-    treeView.metadata = source.metadata;
-  }
-
-  state.treeView = treeView;
-  attachTreeState(treeView, state);
-  return state;
-}
-
-function invalidateNodeCaches<TTypes extends NodeTypeMap>(
-  overlay: OverlayState<TTypes>,
-  nodeId: NodeId,
-): void {
-  overlay.cache.nodeHashById.delete(nodeId);
-  overlay.cache.pathHashByNodeId.delete(nodeId);
-  overlay.dirtyNodeIds.add(nodeId);
-  overlay.dirtyPathHashNodeIds.add(nodeId);
-
-  let current: NodeId | null | undefined = nodeId;
-  while (current != null) {
-    overlay.cache.subtreeHashById.delete(current);
-    overlay.dirtySubtreeNodeIds.add(current);
-    current = overlay.index.parentById.get(current);
-  }
-}
-
-function invalidateSubtreeHashes<TTypes extends NodeTypeMap>(
-  overlay: OverlayState<TTypes>,
-  nodeId: NodeId,
-): void {
-  let current: NodeId | null | undefined = nodeId;
-  while (current != null) {
-    overlay.cache.subtreeHashById.delete(current);
-    overlay.dirtySubtreeNodeIds.add(current);
-    current = overlay.index.parentById.get(current);
-  }
-}
-
 function getAdapterForPointer<TTypes extends NodeTypeMap>(
   overlay: OverlayState<TTypes>,
   nodeType: string,
@@ -782,91 +343,6 @@ function removeObjectValue(
 
   clone[key] = nested.next;
   return { ok: true, next: clone };
-}
-
-function getNode<TTypes extends NodeTypeMap>(
-  overlay: OverlayState<TTypes>,
-  nodeId: NodeId,
-): IndexedNode<TTypes> | undefined {
-  return overlay.nodes.get(nodeId);
-}
-
-function setNode<TTypes extends NodeTypeMap>(
-  overlay: OverlayState<TTypes>,
-  node: IndexedNode<TTypes>,
-): void {
-  overlay.nodes.set(node.id, node);
-}
-
-function getParentChildIds<TTypes extends NodeTypeMap>(
-  overlay: OverlayState<TTypes>,
-  parentId: NodeId,
-): readonly NodeId[] {
-  const parent = overlay.nodes.get(parentId);
-  return parent?.childIds ?? [];
-}
-
-function updateSiblingPositions<TTypes extends NodeTypeMap>(
-  overlay: OverlayState<TTypes>,
-  parentId: NodeId,
-): void {
-  const childIds = getParentChildIds(overlay, parentId);
-  childIds.forEach((childId, index) => {
-    overlay.index.positionById.set(childId, index);
-  });
-}
-
-function resolveInsertIndex<TTypes extends NodeTypeMap>(
-  overlay: OverlayState<TTypes>,
-  parentId: NodeId,
-  position: ChildPosition | undefined,
-  opId: string,
-): { ok: true; index: number } | { ok: false; conflict: PatchConflict } {
-  const childIds = getParentChildIds(overlay, parentId);
-
-  if (!position || "atEnd" in position) {
-    return { ok: true, index: childIds.length };
-  }
-
-  if ("atStart" in position) {
-    return { ok: true, index: 0 };
-  }
-
-  if ("beforeId" in position) {
-    const index = childIds.indexOf(position.beforeId);
-    if (index === -1) {
-      return {
-        ok: false,
-        conflict: toConflict(
-          opId,
-          "AnchorMissing",
-          `Anchor node "${position.beforeId}" is not a child of "${parentId}".`,
-          { nodeId: parentId },
-        ),
-      };
-    }
-    return { ok: true, index };
-  }
-
-  const index = childIds.indexOf(position.afterId);
-  if (index === -1) {
-    return {
-      ok: false,
-      conflict: toConflict(
-        opId,
-        "AnchorMissing",
-        `Anchor node "${position.afterId}" is not a child of "${parentId}".`,
-        { nodeId: parentId },
-      ),
-    };
-  }
-  return { ok: true, index: index + 1 };
-}
-
-function collectSerializedNodeIds(node: SerializedPatchNode, collected: NodeId[] = []): NodeId[] {
-  collected.push(node.id);
-  node.children.forEach((child) => collectSerializedNodeIds(child, collected));
-  return collected;
 }
 
 function evaluateGuards<TTypes extends NodeTypeMap>(
@@ -1283,15 +759,22 @@ function applyShowNode<TTypes extends NodeTypeMap>(
   return { ok: true };
 }
 
-function normalizeInsertedSubtree<TTypes extends NodeTypeMap>(
+interface NormalizedSubtreeIndexEntry {
+  nodeId: NodeId;
+  parentId: NodeId | null;
+  depth: number;
+  position: number;
+}
+
+function normalizeSerializedSubtree<TTypes extends NodeTypeMap>(
   overlay: OverlayState<TTypes>,
   node: SerializedPatchNode,
-  parentId: NodeId,
+  parentId: NodeId | null,
   depth: number,
   position: number,
 ): {
   nodes: IndexedNode<TTypes>[];
-  index: Array<{ nodeId: NodeId; parentId: NodeId; depth: number; position: number }>;
+  index: NormalizedSubtreeIndexEntry[];
 } {
   const attrs = decodeSerializedAttrs(
     overlay,
@@ -1301,7 +784,7 @@ function normalizeInsertedSubtree<TTypes extends NodeTypeMap>(
   ) as IndexedNode<TTypes>["attrs"];
 
   const normalizedChildren = node.children.map((child, childIndex) =>
-    normalizeInsertedSubtree(overlay, child, node.id, depth + 1, childIndex),
+    normalizeSerializedSubtree(overlay, child, node.id, depth + 1, childIndex),
   );
 
   const indexedNode = {
@@ -1320,6 +803,47 @@ function normalizeInsertedSubtree<TTypes extends NodeTypeMap>(
   };
 }
 
+function setParentChildIds<TTypes extends NodeTypeMap>(
+  overlay: OverlayState<TTypes>,
+  parentId: NodeId,
+  childIds: readonly NodeId[],
+): void {
+  const parent = getNode(overlay, parentId);
+  if (!parent) {
+    return;
+  }
+
+  setNode(overlay, {
+    ...parent,
+    childIds: [...childIds],
+  });
+  overlay.dirtyNodeIds.add(parentId);
+}
+
+function sameNodeIdOrder(left: readonly NodeId[], right: readonly NodeId[]): boolean {
+  if (left.length !== right.length) {
+    return false;
+  }
+
+  return left.every((nodeId, index) => nodeId === right[index]);
+}
+
+function isNodeWithinSubtree<TTypes extends NodeTypeMap>(
+  overlay: OverlayState<TTypes>,
+  nodeId: NodeId,
+  subtreeRootId: NodeId,
+): boolean {
+  let current: NodeId | null | undefined = nodeId;
+  while (current != null) {
+    if (current === subtreeRootId) {
+      return true;
+    }
+    current = overlay.index.parentById.get(current);
+  }
+
+  return false;
+}
+
 function applyInsertNode<TTypes extends NodeTypeMap>(
   context: ExecutionContext<TTypes>,
   op: InsertNodeOp,
@@ -1335,7 +859,13 @@ function applyInsertNode<TTypes extends NodeTypeMap>(
   }
 
   const position = normalizePosition(op.position, `patch.ops.${op.opId}.position`);
-  const resolvedIndex = resolveInsertIndex(context.overlay, op.parentId, position, op.opId);
+  const resolvedIndex = resolvePositionAgainstChildIds(
+    parent.childIds,
+    position,
+    op.opId,
+    op.parentId,
+    toConflict,
+  );
   if (!resolvedIndex.ok) {
     return resolvedIndex;
   }
@@ -1360,7 +890,7 @@ function applyInsertNode<TTypes extends NodeTypeMap>(
   }
 
   const parentDepth = context.overlay.index.depthById.get(parent.id) ?? 0;
-  const normalized = normalizeInsertedSubtree(
+  const normalized = normalizeSerializedSubtree(
     context.overlay,
     op.node,
     parent.id,
@@ -1370,11 +900,7 @@ function applyInsertNode<TTypes extends NodeTypeMap>(
 
   const newChildIds = [...parent.childIds];
   newChildIds.splice(resolvedIndex.index, 0, op.node.id);
-  setNode(context.overlay, {
-    ...parent,
-    childIds: newChildIds,
-  });
-  context.overlay.dirtyNodeIds.add(parent.id);
+  setParentChildIds(context.overlay, parent.id, newChildIds);
 
   normalized.nodes.forEach((node) => {
     setNode(context.overlay, node);
@@ -1389,6 +915,296 @@ function applyInsertNode<TTypes extends NodeTypeMap>(
 
   updateSiblingPositions(context.overlay, parent.id);
   invalidateSubtreeHashes(context.overlay, parent.id);
+  return { ok: true };
+}
+
+function applyMoveNode<TTypes extends NodeTypeMap>(
+  context: ExecutionContext<TTypes>,
+  op: Extract<PatchOp, { kind: "moveNode" }>,
+): OperationResult {
+  const overlay = context.overlay;
+  const node = getNode(overlay, op.nodeId);
+  if (!node) {
+    return {
+      ok: false,
+      conflict: toConflict(op.opId, "NodeMissing", `Node "${op.nodeId}" does not exist.`, {
+        nodeId: op.nodeId,
+      }),
+    };
+  }
+  if (node.id === overlay.rootId) {
+    return {
+      ok: false,
+      conflict: toConflict(op.opId, "IllegalOperation", "The root node cannot be moved.", {
+        nodeId: node.id,
+      }),
+    };
+  }
+
+  const newParent = getNode(overlay, op.newParentId);
+  if (!newParent) {
+    return {
+      ok: false,
+      conflict: toConflict(
+        op.opId,
+        "NodeMissing",
+        `Parent node "${op.newParentId}" does not exist.`,
+        { nodeId: op.newParentId },
+      ),
+    };
+  }
+
+  const currentParentId = overlay.index.parentById.get(op.nodeId);
+  if (currentParentId == null) {
+    return {
+      ok: false,
+      conflict: toConflict(op.opId, "IllegalOperation", "The root node cannot be moved.", {
+        nodeId: op.nodeId,
+      }),
+    };
+  }
+
+  const position = normalizePosition(op.position, `patch.ops.${op.opId}.position`);
+  if (
+    position &&
+    (("beforeId" in position && position.beforeId === op.nodeId) ||
+      ("afterId" in position && position.afterId === op.nodeId))
+  ) {
+    return {
+      ok: false,
+      conflict: toConflict(op.opId, "IllegalOperation", "A node cannot use itself as a move anchor.", {
+        nodeId: op.nodeId,
+      }),
+    };
+  }
+
+  if (isNodeWithinSubtree(overlay, op.newParentId, op.nodeId)) {
+    return {
+      ok: false,
+      conflict: toConflict(
+        op.opId,
+        "IllegalOperation",
+        `Moving node "${op.nodeId}" under "${op.newParentId}" would create a cycle.`,
+        { nodeId: op.nodeId, expected: currentParentId, actual: op.newParentId },
+      ),
+    };
+  }
+
+  if (!overlay.patchOwned.has(op.nodeId) && overlay.patchOwned.has(op.newParentId)) {
+    return {
+      ok: false,
+      conflict: toConflict(
+        op.opId,
+        "IllegalOperation",
+        `Source-backed node "${op.nodeId}" cannot move under patch-owned parent "${op.newParentId}".`,
+        { nodeId: op.nodeId, expected: "source-backed parent", actual: op.newParentId },
+      ),
+    };
+  }
+
+  const currentSiblingIds = getParentChildIds(overlay, currentParentId);
+  const destinationSiblings =
+    currentParentId === op.newParentId
+      ? currentSiblingIds.filter((childId) => childId !== op.nodeId)
+      : [...getParentChildIds(overlay, op.newParentId)];
+  const resolvedIndex = resolvePositionAgainstChildIds(
+    destinationSiblings,
+    position,
+    op.opId,
+    op.newParentId,
+    toConflict,
+  );
+  if (!resolvedIndex.ok) {
+    return resolvedIndex;
+  }
+
+  const guards = evaluateGuards(context, op.opId, op.guards);
+  if (!guards.ok) {
+    return guards;
+  }
+
+  const movedChildIds = [...destinationSiblings];
+  movedChildIds.splice(resolvedIndex.index, 0, op.nodeId);
+  if (currentParentId === op.newParentId && sameNodeIdOrder(movedChildIds, currentSiblingIds)) {
+    return { ok: true };
+  }
+
+  if (currentParentId === op.newParentId) {
+    setParentChildIds(overlay, currentParentId, movedChildIds);
+    updateSiblingPositions(overlay, currentParentId);
+    invalidateSubtreeHashes(overlay, currentParentId);
+    return { ok: true };
+  }
+
+  const oldSiblingIds = currentSiblingIds.filter((childId) => childId !== op.nodeId);
+  setParentChildIds(overlay, currentParentId, oldSiblingIds);
+  setParentChildIds(overlay, newParent.id, movedChildIds);
+  overlay.index.parentById.set(op.nodeId, newParent.id);
+
+  const nextDepth = (overlay.index.depthById.get(newParent.id) ?? 0) + 1;
+  reindexSubtreeDepths(overlay, op.nodeId, nextDepth);
+  updateSiblingPositions(overlay, currentParentId);
+  updateSiblingPositions(overlay, newParent.id);
+  invalidateSubtreeHashes(overlay, currentParentId);
+  invalidateSubtreeHashes(overlay, newParent.id);
+  return { ok: true };
+}
+
+function applyReplaceSubtree<TTypes extends NodeTypeMap>(
+  context: ExecutionContext<TTypes>,
+  op: Extract<PatchOp, { kind: "replaceSubtree" }>,
+): OperationResult {
+  const overlay = context.overlay;
+  const target = getNode(overlay, op.nodeId);
+  if (!target) {
+    return {
+      ok: false,
+      conflict: toConflict(op.opId, "NodeMissing", `Node "${op.nodeId}" does not exist.`, {
+        nodeId: op.nodeId,
+      }),
+    };
+  }
+
+  const replacedSubtreeIds = new Set(collectSubtreeNodeIds(overlay, op.nodeId));
+  const replacementIds = collectSerializedNodeIds(op.node);
+  for (const replacementId of replacementIds) {
+    if (replacementId === op.nodeId) {
+      continue;
+    }
+
+    if (overlay.nodes.has(replacementId) && !replacedSubtreeIds.has(replacementId)) {
+      return {
+        ok: false,
+        conflict: toConflict(
+          op.opId,
+          "NodeAlreadyExists",
+          `Replacement subtree reuses live node id "${replacementId}".`,
+          { nodeId: replacementId },
+        ),
+      };
+    }
+
+    if (replacedSubtreeIds.has(replacementId) && !overlay.patchOwned.has(replacementId)) {
+      return {
+        ok: false,
+        conflict: toConflict(
+          op.opId,
+          "IllegalOperation",
+          `Replacement subtree cannot reuse removed source-backed descendant id "${replacementId}".`,
+          { nodeId: replacementId },
+        ),
+      };
+    }
+  }
+
+  const guards = evaluateGuards(context, op.opId, op.guards);
+  if (!guards.ok) {
+    return guards;
+  }
+
+  const parentId = overlay.index.parentById.get(op.nodeId) ?? null;
+  const depth = overlay.index.depthById.get(op.nodeId) ?? 0;
+  const position = overlay.index.positionById.get(op.nodeId) ?? 0;
+  const rootWasPatchOwned = overlay.patchOwned.has(op.nodeId);
+  const rootWasExplicitlyHidden = overlay.explicitHidden.has(op.nodeId);
+
+  const removedDescendantIds = [...replacedSubtreeIds].filter((nodeId) => nodeId !== op.nodeId);
+  clearSubtreeState(overlay, removedDescendantIds);
+
+  const normalized = normalizeSerializedSubtree(
+    overlay,
+    op.node,
+    parentId,
+    depth,
+    position,
+  );
+
+  normalized.nodes.forEach((node) => {
+    setNode(overlay, node);
+    if (node.id === op.nodeId) {
+      if (rootWasPatchOwned) {
+        overlay.patchOwned.add(node.id);
+      } else {
+        overlay.patchOwned.delete(node.id);
+      }
+
+      if (rootWasExplicitlyHidden) {
+        overlay.explicitHidden.add(node.id);
+      } else {
+        overlay.explicitHidden.delete(node.id);
+      }
+      return;
+    }
+
+    overlay.patchOwned.add(node.id);
+    overlay.explicitHidden.delete(node.id);
+  });
+
+  normalized.index.forEach((entry) => {
+    overlay.index.parentById.set(entry.nodeId, entry.parentId);
+    overlay.index.depthById.set(entry.nodeId, entry.depth);
+    overlay.index.positionById.set(entry.nodeId, entry.position);
+  });
+
+  invalidateNodeCaches(overlay, op.nodeId);
+  return { ok: true };
+}
+
+function applyRemoveNode<TTypes extends NodeTypeMap>(
+  context: ExecutionContext<TTypes>,
+  op: Extract<PatchOp, { kind: "removeNode" }>,
+): OperationResult {
+  const overlay = context.overlay;
+  const node = getNode(overlay, op.nodeId);
+  if (!node) {
+    return {
+      ok: false,
+      conflict: toConflict(op.opId, "NodeMissing", `Node "${op.nodeId}" does not exist.`, {
+        nodeId: op.nodeId,
+      }),
+    };
+  }
+  if (node.id === overlay.rootId) {
+    return {
+      ok: false,
+      conflict: toConflict(op.opId, "IllegalOperation", "The root node cannot be removed.", {
+        nodeId: node.id,
+      }),
+    };
+  }
+  if (!overlay.patchOwned.has(op.nodeId)) {
+    return {
+      ok: false,
+      conflict: toConflict(
+        op.opId,
+        "IllegalOperation",
+        `Source-backed node "${op.nodeId}" cannot be removed.`,
+        { nodeId: op.nodeId },
+      ),
+    };
+  }
+
+  const parentId = overlay.index.parentById.get(op.nodeId);
+  if (parentId == null) {
+    return {
+      ok: false,
+      conflict: toConflict(op.opId, "IllegalOperation", "The root node cannot be removed.", {
+        nodeId: op.nodeId,
+      }),
+    };
+  }
+
+  const guards = evaluateGuards(context, op.opId, op.guards);
+  if (!guards.ok) {
+    return guards;
+  }
+
+  const removedIds = collectSubtreeNodeIds(overlay, op.nodeId);
+  const siblingIds = getParentChildIds(overlay, parentId).filter((childId) => childId !== op.nodeId);
+  setParentChildIds(overlay, parentId, siblingIds);
+  clearSubtreeState(overlay, removedIds);
+  updateSiblingPositions(overlay, parentId);
+  invalidateSubtreeHashes(overlay, parentId);
   return { ok: true };
 }
 
@@ -1408,14 +1224,11 @@ function applyOperation<TTypes extends NodeTypeMap>(
     case "insertNode":
       return applyInsertNode(context, op);
     case "moveNode":
+      return applyMoveNode(context, op);
     case "replaceSubtree":
+      return applyReplaceSubtree(context, op);
     case "removeNode":
-      throw new UnsupportedPatchOperationError(
-        `Patch operation "${op.kind}" is not implemented in Phase 2.`,
-        {
-          details: { kind: op.kind, opId: op.opId },
-        },
-      );
+      return applyRemoveNode(context, op);
   }
 }
 

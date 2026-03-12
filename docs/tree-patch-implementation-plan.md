@@ -13,7 +13,7 @@ Use this file as the source of truth for implementation status:
 
 - [x] Phase 1 complete
 - [x] Phase 2 complete
-- [ ] Phase 3 complete
+- [x] Phase 3 complete
 - [ ] Phase 4 complete
 - [ ] Phase 5 complete
 - [ ] v1 complete
@@ -122,28 +122,28 @@ Goal: support structural mutations safely while preserving overlay ordering sema
 
 ### Implementation Checklist
 
-- [ ] Implement `moveNode` with `beforeId`, `afterId`, `atStart`, and `atEnd` positioning.
-- [ ] Implement anchor validation and anchor-missing conflicts.
-- [ ] Implement illegal move cycle detection.
-- [ ] Enforce ownership restrictions for moving source-backed nodes under patch-owned parents.
-- [ ] Implement `replaceSubtree` with root identity preservation and descendant ownership behavior.
-- [ ] Implement `removeNode` for patch-owned nodes.
-- [ ] Enforce root restrictions for `hideNode`, `moveNode`, `removeNode`, and `replaceSubtree`.
-- [ ] Ensure later operations in the same patch see overlay state produced by earlier successful structural ops.
-- [ ] Update normalized indexes incrementally for insert, move, replace, and remove scenarios.
-- [ ] Invalidate node, subtree, and path-hash caches only for affected regions.
+- [x] Implement `moveNode` with `beforeId`, `afterId`, `atStart`, and `atEnd` positioning.
+- [x] Implement anchor validation and anchor-missing conflicts.
+- [x] Implement illegal move cycle detection.
+- [x] Enforce ownership restrictions for moving source-backed nodes under patch-owned parents.
+- [x] Implement `replaceSubtree` with root identity preservation and descendant ownership behavior.
+- [x] Implement `removeNode` for patch-owned nodes.
+- [x] Enforce root restrictions for `hideNode`, `moveNode`, `removeNode`, and `replaceSubtree`.
+- [x] Ensure later operations in the same patch see overlay state produced by earlier successful structural ops.
+- [x] Update normalized indexes incrementally for insert, move, replace, and remove scenarios.
+- [x] Invalidate node, subtree, and path-hash caches only for affected regions.
 
 ### Acceptance Criteria
 
-- [ ] Moving a source-backed node under a patch-owned parent yields `IllegalOperation`.
-- [ ] `replaceSubtree` requires `node.id === nodeId`.
-- [ ] `replaceSubtree` keeps the original parent relationship and child position of the replaced root.
-- [ ] Descendants introduced by `replaceSubtree` are treated as patch-owned.
-- [ ] Later ops targeting descendants removed by `replaceSubtree` or `removeNode` yield `NodeMissing`.
-- [ ] Root cannot be hidden, moved, or removed.
-- [ ] Root replacement is only allowed when the replacement root preserves the same root ID.
-- [ ] Structural updates leave `parentById`, `positionById`, and `depthById` consistent.
-- [ ] Unrelated caches remain valid after localized structural changes.
+- [x] Moving a source-backed node under a patch-owned parent yields `IllegalOperation`.
+- [x] `replaceSubtree` requires `node.id === nodeId`.
+- [x] `replaceSubtree` keeps the original parent relationship and child position of the replaced root.
+- [x] Descendants introduced by `replaceSubtree` are treated as patch-owned.
+- [x] Later ops targeting descendants removed by `replaceSubtree` or `removeNode` yield `NodeMissing`.
+- [x] Root cannot be hidden, moved, or removed.
+- [x] Root replacement is only allowed when the replacement root preserves the same root ID.
+- [x] Structural updates leave `parentById`, `positionById`, and `depthById` consistent.
+- [x] Unrelated caches remain valid after localized structural changes.
 
 ## Phase 4 - Diff And Rebase
 
