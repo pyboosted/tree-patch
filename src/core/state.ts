@@ -23,6 +23,8 @@ export interface MutableTreeState<TTypes extends NodeTypeMap> {
     depthById: Map<NodeId, number>;
   };
   cache: MutableTreeCache;
+  explicitHidden: Set<NodeId>;
+  patchOwned: Set<NodeId>;
 }
 
 const TREE_STATE = new WeakMap<object, MutableTreeState<NodeTypeMap>>();
@@ -44,4 +46,3 @@ export function getTreeState<TTypes extends NodeTypeMap>(
 
   return state as MutableTreeState<TTypes>;
 }
-

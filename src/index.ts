@@ -1,12 +1,16 @@
 export { createDocument } from "./core/document.js";
+export { applyPatch, materialize, validatePatch } from "./core/apply.js";
 export {
+  AmbiguousPositionError,
   DuplicateIdError,
   InvalidPointerError,
   InvalidRootError,
   InvalidSchemaError,
+  MalformedPatchError,
   MalformedTreeError,
   MissingCodecError,
   TreePatchError,
+  UnsupportedPatchOperationError,
   UnsupportedRuntimeValueError,
 } from "./core/errors.js";
 export { defaultJsonValueAdapter, decodePersistedValue, encodePersistedValue } from "./schema/adapters.js";

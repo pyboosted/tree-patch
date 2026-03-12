@@ -12,7 +12,7 @@ Use this file as the source of truth for implementation status:
 ## Overall Status
 
 - [x] Phase 1 complete
-- [ ] Phase 2 complete
+- [x] Phase 2 complete
 - [ ] Phase 3 complete
 - [ ] Phase 4 complete
 - [ ] Phase 5 complete
@@ -86,35 +86,35 @@ Goal: build the sequential overlay-based engine for validation, apply, preview, 
 
 ### Implementation Checklist
 
-- [ ] Define the internal overlay state model used by apply, validate, materialize, and rebase flows.
-- [ ] Implement `RevisionStatus` computation for `match`, `mismatch`, and `unknown`.
-- [ ] Implement sequential guard evaluation against current overlay state.
-- [ ] Implement `validatePatch()` in `atomic` and `preview` modes.
-- [ ] Implement `applyPatch()` in `atomic` and `preview` modes.
-- [ ] Implement `materialize()` as a projection-oriented **convenience wrapper** that delegates to the same sequential overlay engine as `applyPatch()`, not a separate code path.
-- [ ] Implement `setAttr` with object autovivification and dense-array rules.
-- [ ] Implement `removeAttr` with object removal and array splice semantics.
-- [ ] Implement `hideNode` with explicit-hidden state tracking.
-- [ ] Implement `showNode` so it clears only explicit hidden state on the same node.
-- [ ] Implement `insertNode` for patch-owned nodes under source-backed or patch-owned parents.
-- [ ] Decode persisted values through codecs before comparison and materialization.
-- [ ] Encode persisted values correctly when they are emitted by builder- or diff-generated patches.
-- [ ] Return typed result envelopes for `valid`, `applied`, `preview`, and `conflict` outcomes.
-- [ ] Build nested materialized output with sidecar `state.hidden` and `state.patchOwned`.
+- [x] Define the internal overlay state model used by apply, validate, materialize, and rebase flows.
+- [x] Implement `RevisionStatus` computation for `match`, `mismatch`, and `unknown`.
+- [x] Implement sequential guard evaluation against current overlay state.
+- [x] Implement `validatePatch()` in `atomic` and `preview` modes.
+- [x] Implement `applyPatch()` in `atomic` and `preview` modes.
+- [x] Implement `materialize()` as a projection-oriented **convenience wrapper** that delegates to the same sequential overlay engine as `applyPatch()`, not a separate code path.
+- [x] Implement `setAttr` with object autovivification and dense-array rules.
+- [x] Implement `removeAttr` with object removal and array splice semantics.
+- [x] Implement `hideNode` with explicit-hidden state tracking.
+- [x] Implement `showNode` so it clears only explicit hidden state on the same node.
+- [x] Implement `insertNode` for patch-owned nodes under source-backed or patch-owned parents.
+- [x] Decode persisted values through codecs before comparison and materialization.
+- [x] Encode persisted values correctly when they are emitted by builder- or diff-generated patches.
+- [x] Return typed result envelopes for `valid`, `applied`, `preview`, and `conflict` outcomes.
+- [x] Build nested materialized output with sidecar `state.hidden` and `state.patchOwned`.
 
 ### Acceptance Criteria
 
-- [ ] `applyPatch(..., { mode: "atomic" })` returns `status: "conflict"` and no committed result when any operation conflicts.
-- [ ] `applyPatch(..., { mode: "preview" })` returns partial results plus conflicts for failed operations.
-- [ ] `validatePatch()` uses the same sequential overlay semantics as `applyPatch()` and does not commit state.
-- [ ] `materialize()` uses the same conflict semantics as `applyPatch()` and does not silently ignore conflicts.
-- [ ] Runtime-invalid paths produce `PatchConflict.kind = "PathInvalid"`.
-- [ ] `setAttr` creates missing plain-object segments but never creates array holes or appends arrays implicitly.
-- [ ] `removeAttr` on an array index splices the array and shifts subsequent elements.
-- [ ] `showNode` does not override hidden state inherited from a hidden ancestor.
-- [ ] `includeHidden: false` omits effectively hidden nodes and their descendants from materialized output.
-- [ ] Codec-backed values compare and materialize correctly after decode.
-- [ ] `RevisionStatus` computation returns `match` when both revisions present and equal, `mismatch` when both present and unequal, `unknown` when either is absent.
+- [x] `applyPatch(..., { mode: "atomic" })` returns `status: "conflict"` and no committed result when any operation conflicts.
+- [x] `applyPatch(..., { mode: "preview" })` returns partial results plus conflicts for failed operations.
+- [x] `validatePatch()` uses the same sequential overlay semantics as `applyPatch()` and does not commit state.
+- [x] `materialize()` uses the same conflict semantics as `applyPatch()` and does not silently ignore conflicts.
+- [x] Runtime-invalid paths produce `PatchConflict.kind = "PathInvalid"`.
+- [x] `setAttr` creates missing plain-object segments but never creates array holes or appends arrays implicitly.
+- [x] `removeAttr` on an array index splices the array and shifts subsequent elements.
+- [x] `showNode` does not override hidden state inherited from a hidden ancestor.
+- [x] `includeHidden: false` omits effectively hidden nodes and their descendants from materialized output.
+- [x] Codec-backed values compare and materialize correctly after decode.
+- [x] `RevisionStatus` computation returns `match` when both revisions present and equal, `mismatch` when both present and unequal, `unknown` when either is absent.
 
 ## Phase 3 - Structural Operations And Snapshot Integrity
 

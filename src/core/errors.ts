@@ -1,11 +1,14 @@
 export type TreePatchErrorCode =
   | "MALFORMED_TREE"
+  | "MALFORMED_PATCH"
   | "DUPLICATE_ID"
   | "INVALID_ROOT"
   | "INVALID_POINTER"
   | "MISSING_CODEC"
   | "INVALID_SCHEMA"
-  | "UNSUPPORTED_RUNTIME_VALUE";
+  | "UNSUPPORTED_RUNTIME_VALUE"
+  | "AMBIGUOUS_POSITION"
+  | "UNSUPPORTED_PATCH_OPERATION";
 
 export interface TreePatchErrorOptions {
   cause?: unknown;
@@ -33,6 +36,12 @@ export class TreePatchError extends Error {
 export class MalformedTreeError extends TreePatchError {
   constructor(message: string, options: TreePatchErrorOptions = {}) {
     super("MALFORMED_TREE", message, options);
+  }
+}
+
+export class MalformedPatchError extends TreePatchError {
+  constructor(message: string, options: TreePatchErrorOptions = {}) {
+    super("MALFORMED_PATCH", message, options);
   }
 }
 
@@ -73,5 +82,17 @@ export class InvalidSchemaError extends TreePatchError {
 export class UnsupportedRuntimeValueError extends TreePatchError {
   constructor(message: string, options: TreePatchErrorOptions = {}) {
     super("UNSUPPORTED_RUNTIME_VALUE", message, options);
+  }
+}
+
+export class AmbiguousPositionError extends TreePatchError {
+  constructor(message: string, options: TreePatchErrorOptions = {}) {
+    super("AMBIGUOUS_POSITION", message, options);
+  }
+}
+
+export class UnsupportedPatchOperationError extends TreePatchError {
+  constructor(message: string, options: TreePatchErrorOptions = {}) {
+    super("UNSUPPORTED_PATCH_OPERATION", message, options);
   }
 }

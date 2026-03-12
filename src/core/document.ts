@@ -269,6 +269,8 @@ export function createDocument<TTypes extends NodeTypeMap>(
       subtreeHashById,
       pathHashByNodeId,
     },
+    explicitHidden: new Set(),
+    patchOwned: new Set(),
   });
 
   if (!tree.revision) {
