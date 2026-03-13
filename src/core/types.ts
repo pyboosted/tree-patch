@@ -312,6 +312,13 @@ export interface DiffOptions<TTypes extends NodeTypeMap> {
   schema?: TreeSchema<TTypes>;
 }
 
+export interface ConflictResolutionOptions<TTypes extends NodeTypeMap> {
+  includeHidden?: boolean;
+  diff?: DiffOptions<TTypes>;
+}
+
+export type ConflictResolutionDecision = "takeBase" | "keepLocal";
+
 export interface RevisionStatus {
   status: "match" | "mismatch" | "unknown";
   sourceRevision?: string;
@@ -381,3 +388,37 @@ export interface RebaseResult<TTypes extends NodeTypeMap> {
   preview?: IndexedTree<TTypes>;
 }
 
+export type ResolutionBuildResult<TTypes extends NodeTypeMap> =
+  | {
+      status: "resolved";
+      resolvedPatch: TreePatch;
+      preview: IndexedTree<TTypes>;
+      appliedOpIds: readonly string[];
+      skippedOpIds: readonly string[];
+    }
+  | {
+      status: "unresolved";
+      preview: IndexedTree<TTypes>;
+      conflicts: readonly PatchConflict[];
+      unresolvedConflicts: readonly PatchConflict[];
+      replayConflicts: readonly PatchConflict[];
+      appliedOpIds: readonly string[];
+      skippedOpIds: readonly string[];
+    };
+
+export interface ConflictResolutionSession<TTypes extends NodeTypeMap> {
+  readonly initialRebase: RebaseResult<TTypes>;
+  readonly preview: IndexedTree<TTypes>;
+  readonly conflicts: readonly PatchConflict[];
+  readonly unresolvedConflicts: readonly PatchConflict[];
+  readonly replayConflicts: readonly PatchConflict[];
+  readonly appliedOpIds: readonly string[];
+  readonly skippedOpIds: readonly string[];
+  getDecision(opId: string): ConflictResolutionDecision | undefined;
+  takeBase(opId: string): this;
+  keepLocal(opId: string): this;
+  reset(opId: string): this;
+  takeBaseAll(): this;
+  keepLocalAll(): this;
+  build(): ResolutionBuildResult<TTypes>;
+}

@@ -18,6 +18,7 @@ The runtime has zero Node/Bun-specific dependencies. The built library is intend
 - Conflict-aware patch application with field-scoped guards
 - Structural operations: insert, move, replace subtree, remove, hide/show
 - Deterministic diff generation and patch rebasing
+- Conflict-resolution sessions with per-conflict `takeBase` / `keepLocal`
 - Typed patch authoring with `patchBuilder()` and `createEditor()`
 - Runtime schema support for atomic paths, custom equality, hashing, cloning, and codecs
 
@@ -33,6 +34,7 @@ import {
   applyPatch,
   validatePatch,
   materialize,
+  createResolutionSession,
   diffTrees,
   rebasePatch,
 } from "tree-patch";
@@ -204,6 +206,34 @@ const rebased = rebasePatch(base, target, patch);
 
 `diffTrees()` generates deterministic semantic ops. `rebasePatch()` replays a patch on a new base and keeps only the operations that still apply cleanly.
 
+## Conflict Resolution
+
+For localization-style workflows, you can create a resolution session, make per-conflict decisions, and rebuild a fresh patch against the new base.
+
+```ts
+const session = createResolutionSession(oldBase, newBase, patch);
+
+for (const conflict of session.unresolvedConflicts) {
+  if (conflict.opId === "hero-title") {
+    session.keepLocal(conflict.opId);
+  } else {
+    session.takeBase(conflict.opId);
+  }
+}
+
+const result = session.build();
+
+if (result.status === "resolved") {
+  const nextPatch = result.resolvedPatch;
+}
+```
+
+Notes:
+
+- `takeBase(opId)` drops that operation from the rebuilt patch
+- `keepLocal(opId)` replays the original operation intent without its old guards
+- `build()` still returns a patch; the resolved preview tree is only an in-memory intermediate
+
 ## Schemas, Adapters, and Codecs
 
 Use a `TreeSchema` when you need custom equality, hashing, cloning, or persistence for runtime values.
@@ -260,6 +290,7 @@ Main functions:
 - `materialize()`
 - `diffTrees()`
 - `rebasePatch()`
+- `createResolutionSession()`
 - `patchBuilder()`
 - `createEditor()`
 - `pathToPointer()` / `pointerToPath()`

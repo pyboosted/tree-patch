@@ -2,12 +2,14 @@ export { createDocument } from "./core/document.js";
 export { applyPatch, materialize, validatePatch } from "./core/apply.js";
 export { diffTrees, rebasePatch } from "./core/diff.js";
 export { createEditor, patchBuilder } from "./editor/builder.js";
+export { createResolutionSession } from "./resolution/session.js";
 export {
   AmbiguousPositionError,
   DuplicateIdError,
   EditorNodeMissingError,
   EditorNodeTypeMismatchError,
   InvalidPointerError,
+  InvalidResolutionInputError,
   InvalidRootError,
   InvalidSchemaError,
   MalformedPatchError,
@@ -29,6 +31,9 @@ export type {
   ApplyResult,
   AttrPath,
   ChildPosition,
+  ConflictResolutionDecision,
+  ConflictResolutionOptions,
+  ConflictResolutionSession,
   CreateDocumentOptions,
   DeepPath,
   DeepValue,
@@ -56,6 +61,7 @@ export type {
   RebaseResult,
   RemoveAttrOp,
   RemoveNodeOp,
+  ResolutionBuildResult,
   ReplaceSubtreeOp,
   RevisionStatus,
   SerializedPatchNode,

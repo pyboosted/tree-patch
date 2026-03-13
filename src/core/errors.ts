@@ -4,6 +4,7 @@ export type TreePatchErrorCode =
   | "DUPLICATE_ID"
   | "INVALID_ROOT"
   | "INVALID_POINTER"
+  | "INVALID_RESOLUTION_INPUT"
   | "MISSING_CODEC"
   | "MISSING_PATCH_ID"
   | "INVALID_SCHEMA"
@@ -68,6 +69,12 @@ export class InvalidPointerError extends TreePatchError {
     super("INVALID_POINTER", message, {
       details: { pointer },
     });
+  }
+}
+
+export class InvalidResolutionInputError extends TreePatchError {
+  constructor(message: string, options: TreePatchErrorOptions = {}) {
+    super("INVALID_RESOLUTION_INPUT", message, options);
   }
 }
 
