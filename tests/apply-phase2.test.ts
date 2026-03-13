@@ -511,6 +511,37 @@ test("unknown codecs are rejected as programmer errors", () => {
   assert.throws(() => applyPatch(source, patch), MissingCodecError);
 });
 
+test("nodeTypeIs guards against missing nodes fail as guard conflicts", () => {
+  const source = createSourceTree();
+  const patch: TreePatch = {
+    format: "tree-patch/v1",
+    patchId: "missing-node-type-guard",
+    ops: [
+      {
+        kind: "setAttr",
+        opId: "update-title",
+        nodeId: "hero",
+        path: "/title",
+        value: "Promotions d'ete",
+        guards: [
+          {
+            kind: "nodeTypeIs",
+            nodeId: "missing-node",
+            nodeType: "Hero",
+          },
+        ],
+      },
+    ],
+  };
+
+  const result = applyPatch(source, patch);
+  assert.equal(result.status, "conflict");
+  assert.equal(result.conflicts[0]?.kind, "GuardFailed");
+  assert.equal(result.conflicts[0]?.nodeId, "missing-node");
+  assert.equal(result.conflicts[0]?.expected, "Hero");
+  assert.equal(result.conflicts[0]?.actual, undefined);
+});
+
 test("unknown operation kinds are rejected as programmer errors", () => {
   const source = createSourceTree();
   const patch = {

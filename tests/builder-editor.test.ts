@@ -152,7 +152,7 @@ function visibleShape(tree: ReturnType<typeof createSourceTree>): unknown {
 
 test("patchBuilder requires patchId and emits deterministic field and visibility ops", () => {
   const builder = patchBuilder<ContentTypes>();
-  builder.setAttr("hero", ["title"], "Promotions d'ete", {
+  builder.node("hero", "Hero").set(["title"], "Promotions d'ete", {
     expect: "Summer Sale",
   });
   assert.throws(() => builder.build(), MissingPatchIdError);
@@ -160,10 +160,11 @@ test("patchBuilder requires patchId and emits deterministic field and visibility
   const patch = patchBuilder<ContentTypes>()
     .patchId("fr-home")
     .baseRevision("rev-1")
-    .setAttr("hero", ["title"], "Promotions d'ete", {
+    .node("hero", "Hero")
+    .set(["title"], "Promotions d'ete", {
       expect: "Summer Sale",
     })
-    .setAttr("hero", ["image", "url"], "/img/fr.png", {
+    .set(["image", "url"], "/img/fr.png", {
       expect: "/img/en.png",
     })
     .hideNode("legal")
@@ -193,7 +194,8 @@ test("builder and editor serialize codec-backed values and reject missing codecs
 
   const fieldPatch = patchBuilder<ContentTypes>({ source, schema: schemaWithCodec })
     .patchId("publish")
-    .setAttr("hero", ["publishedAt"], february, {
+    .node("hero", "Hero")
+    .set(["publishedAt"], february, {
       expect: january,
     })
     .build();

@@ -2,11 +2,14 @@ import type {
   ChildPosition,
   IndexedNode,
   IndexedTree,
-  JsonPointer,
   NodeId,
   NodeTypeMap,
   PatchConflict,
 } from "./types.js";
+import {
+  createCopyOnWriteMap,
+  createCopyOnWriteSet,
+} from "./cow.js";
 import { attachTreeState, getTreeState, type MutableTreeState } from "./state.js";
 
 export interface OverlayState<TTypes extends NodeTypeMap> extends MutableTreeState<TTypes> {
@@ -18,18 +21,6 @@ export interface OverlayState<TTypes extends NodeTypeMap> extends MutableTreeSta
   readonly dirtySubtreeNodeIds: Set<NodeId>;
 }
 
-function cloneCache(
-  cache: MutableTreeState<NodeTypeMap>["cache"],
-): MutableTreeState<NodeTypeMap>["cache"] {
-  return {
-    nodeHashById: new Map(cache.nodeHashById),
-    subtreeHashById: new Map(cache.subtreeHashById),
-    pathHashByNodeId: new Map(
-      [...cache.pathHashByNodeId].map(([nodeId, hashes]) => [nodeId, new Map(hashes)]),
-    ),
-  };
-}
-
 export function createOverlayState<TTypes extends NodeTypeMap>(
   source: IndexedTree<TTypes>,
 ): OverlayState<TTypes> {
@@ -37,17 +28,22 @@ export function createOverlayState<TTypes extends NodeTypeMap>(
   const state = {
     ownership: sourceState.ownership,
     schema: sourceState.schema,
-    nodes: new Map(sourceState.nodes),
+    nodes: createCopyOnWriteMap(sourceState.nodes),
     index: {
-      parentById: new Map(sourceState.index.parentById),
-      positionById: new Map(sourceState.index.positionById),
-      depthById: new Map(sourceState.index.depthById),
+      parentById: createCopyOnWriteMap(sourceState.index.parentById),
+      positionById: createCopyOnWriteMap(sourceState.index.positionById),
+      depthById: createCopyOnWriteMap(sourceState.index.depthById),
     },
-    cache: cloneCache(sourceState.cache) as MutableTreeState<TTypes>["cache"],
-    explicitHidden: new Set(sourceState.explicitHidden),
-    patchOwned: new Set(sourceState.patchOwned),
+    cache: {
+      nodeHashById: createCopyOnWriteMap(sourceState.cache.nodeHashById),
+      subtreeHashById: createCopyOnWriteMap(sourceState.cache.subtreeHashById),
+      pathHashByNodeId: createCopyOnWriteMap(sourceState.cache.pathHashByNodeId),
+    } as MutableTreeState<TTypes>["cache"],
+    explicitHidden: createCopyOnWriteSet(sourceState.explicitHidden),
+    patchOwned: createCopyOnWriteSet(sourceState.patchOwned),
     rootId: source.rootId,
     metadata: source.metadata,
+    treeView: undefined as unknown as IndexedTree<TTypes>,
     dirtyNodeIds: new Set<NodeId>(),
     dirtyPathHashNodeIds: new Set<NodeId>(),
     dirtySubtreeNodeIds: new Set<NodeId>(),
@@ -174,6 +170,7 @@ export function resolvePositionAgainstChildIds(
         ),
       };
     }
+
     return { ok: true, index };
   }
 

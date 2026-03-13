@@ -79,3 +79,15 @@ test("persisted values reject missing or unknown codecs", () => {
   );
 });
 
+test("the reserved codec envelope shape is not treated as ordinary JSON user data", () => {
+  assert.throws(
+    () =>
+      decodePersistedValue({
+        $codec: "plain-json-looking-object",
+        value: {
+          title: "Hello",
+        },
+      }),
+    MissingCodecError,
+  );
+});

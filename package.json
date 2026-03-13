@@ -13,7 +13,7 @@
     }
   },
   "scripts": {
-    "build": "tsc -p tsconfig.json",
+    "build": "node --eval \"import('node:fs').then(fs => fs.rmSync('dist', { recursive: true, force: true }))\" && tsc -p tsconfig.json",
     "test": "bun test",
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.typecheck.json --noEmit"
   },
@@ -22,4 +22,3 @@
     "typescript": "^5.9.2"
   }
 }
-

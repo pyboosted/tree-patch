@@ -13,7 +13,7 @@
     "declarationMap": true,
     "sourceMap": true,
     "outDir": "dist",
-    "rootDir": ".",
+    "rootDir": "src",
     "skipLibCheck": true,
     "verbatimModuleSyntax": true,
     "noEmitOnError": true,
@@ -25,4 +25,3 @@
     "src/**/*.ts"
   ]
 }
-

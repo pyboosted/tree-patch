@@ -1,5 +1,3 @@
-import { createHash } from "node:crypto";
-
 import type {
   ChildPosition,
   DiffOptions,
@@ -12,7 +10,6 @@ import type {
   NodeId,
   NodeTypeMap,
   PatchOp,
-  PersistedValue,
   RemoveAttrOp,
   RemoveNodeOp,
   RebaseOptions,
@@ -23,25 +20,26 @@ import type {
   ShowNodeOp,
   TreePatch,
 } from "./types.js";
-import { MissingCodecError, UnsupportedTransformError } from "./errors.js";
+import { UnsupportedTransformError } from "./errors.js";
 import { executePatchInternal } from "./apply.js";
-import { getSubtreeHash, getPathHash, joinJsonPointer } from "./hash.js";
+import { getNodeHash, getPathHash, getSubtreeHash, joinJsonPointer } from "./hash.js";
 import { getTreeState } from "./state.js";
 import { isPlainObject } from "./snapshot.js";
 import {
-  encodePersistedValue,
-  isJsonValue,
   deepEqual,
 } from "../schema/adapters.js";
 import type { CompiledTreeSchema } from "../schema/schema.js";
 import {
   compileTreeSchema,
-  getValueAdapterForPointer,
-  isAtomicPointer,
 } from "../schema/schema.js";
 import { resolvePointer } from "../schema/pointers.js";
-
-type CompiledSchemas<TTypes extends NodeTypeMap> = readonly CompiledTreeSchema<TTypes>[];
+import {
+  type CompiledSchemas,
+  encodeRuntimeValueForPointer,
+  getValueAdapterForSchemas,
+  isAtomicForSchemas,
+} from "../schema/runtime-values.js";
+import { hashStableParts } from "./stable-hash.js";
 
 interface DiffContext<TTypes extends NodeTypeMap> {
   readonly base: IndexedTree<TTypes>;
@@ -61,17 +59,6 @@ interface ThresholdStats {
   changedNodeCount: number;
   baseNodeCount: number;
   targetNodeCount: number;
-}
-
-function hashStableParts(parts: readonly string[]): string {
-  const hash = createHash("sha256");
-  for (const part of parts) {
-    hash.update(String(part.length));
-    hash.update(":");
-    hash.update(part);
-    hash.update("|");
-  }
-  return hash.digest("hex");
 }
 
 function createOpIdFactory() {
@@ -106,29 +93,6 @@ function getCompiledSchemas<TTypes extends NodeTypeMap>(
   }
 
   return schemas;
-}
-
-function getAdapterForSchemas<TTypes extends NodeTypeMap>(
-  schemas: CompiledSchemas<TTypes>,
-  nodeType: string,
-  pointer: JsonPointer,
-) {
-  for (const schema of schemas) {
-    const adapter = getValueAdapterForPointer(schema, nodeType, pointer);
-    if (adapter) {
-      return adapter;
-    }
-  }
-
-  return undefined;
-}
-
-function isAtomicForSchemas<TTypes extends NodeTypeMap>(
-  schemas: CompiledSchemas<TTypes>,
-  nodeType: string,
-  pointer: JsonPointer,
-): boolean {
-  return schemas.some((schema) => isAtomicPointer(schema, nodeType, pointer));
 }
 
 function getEffectivePatchOwnedSet<TTypes extends NodeTypeMap>(
@@ -180,30 +144,21 @@ function buildPatchId<TTypes extends NodeTypeMap>(
   ])}`;
 }
 
-function getAncestorChain<TTypes extends NodeTypeMap>(
-  tree: IndexedTree<TTypes>,
-  nodeId: NodeId,
-): NodeId[] {
-  const chain: NodeId[] = [];
-  let current = tree.index.parentById.get(nodeId);
-  while (current != null) {
-    chain.push(current);
-    current = tree.index.parentById.get(current);
-  }
-  return chain;
-}
-
 function isCoveredByRoots<TTypes extends NodeTypeMap>(
   tree: IndexedTree<TTypes>,
   nodeId: NodeId,
   roots: ReadonlySet<NodeId>,
   includeSelf = false,
 ): boolean {
-  if (includeSelf && roots.has(nodeId)) {
-    return true;
+  let current = includeSelf ? nodeId : (tree.index.parentById.get(nodeId) ?? null);
+  while (current != null) {
+    if (roots.has(current)) {
+      return true;
+    }
+    current = tree.index.parentById.get(current) ?? null;
   }
 
-  return getAncestorChain(tree, nodeId).some((ancestorId) => roots.has(ancestorId));
+  return false;
 }
 
 function findNearestViableReplacementRoot<TTypes extends NodeTypeMap>(
@@ -276,7 +231,7 @@ function countAttrChanges<TTypes extends NodeTypeMap>(
 
   if (
     isAtomicForSchemas(schemas, nodeType, pointer) ||
-    getAdapterForSchemas(schemas, nodeType, pointer) ||
+    getValueAdapterForSchemas(schemas, nodeType, pointer) ||
     Array.isArray(baseValue) ||
     Array.isArray(targetValue) ||
     !isPlainObject(baseValue) ||
@@ -315,6 +270,9 @@ function collectChangedNodesWithinSubtree<TTypes extends NodeTypeMap>(
   if (!baseNode || !targetNode) {
     return 1;
   }
+  if (getSubtreeHash(base, nodeId) === getSubtreeHash(target, nodeId)) {
+    return 0;
+  }
 
   let changed = 0;
   if (
@@ -325,9 +283,11 @@ function collectChangedNodesWithinSubtree<TTypes extends NodeTypeMap>(
     changed += 1;
   }
 
+  const baseChildIdSet = new Set(baseNode.childIds);
+  const targetChildIdSet = new Set(targetNode.childIds);
   const childIds = new Set([...baseNode.childIds, ...targetNode.childIds]);
   for (const childId of childIds) {
-    if (base.nodes.has(childId) && target.nodes.has(childId) && getAncestorChain(base, childId).includes(nodeId)) {
+    if (baseChildIdSet.has(childId) && targetChildIdSet.has(childId)) {
       changed += collectChangedNodesWithinSubtree(base, target, childId);
       continue;
     }
@@ -358,16 +318,17 @@ function shouldReplaceSubtreeByThresholds<TTypes extends NodeTypeMap>(
     return false;
   }
 
+  const baseChildPositions = new Map(baseNode.childIds.map((childId, index) => [childId, index]));
+  const targetChildPositions = new Map(
+    targetNode.childIds.map((childId, index) => [childId, index]),
+  );
+
   const stats: ThresholdStats = {
     changedAttrCount: countAttrChanges(schemas, String(baseNode.type), baseNode.attrs, targetNode.attrs, ""),
-    changedChildCount: [...new Set([...baseNode.childIds, ...targetNode.childIds])].filter((childId, index, ids) => {
-      const inBase = baseNode.childIds.includes(childId);
-      const inTarget = targetNode.childIds.includes(childId);
-      if (!inBase || !inTarget) {
-        return true;
-      }
-
-      return baseNode.childIds.indexOf(childId) !== targetNode.childIds.indexOf(childId);
+    changedChildCount: [...new Set([...baseNode.childIds, ...targetNode.childIds])].filter((childId) => {
+      const baseIndex = baseChildPositions.get(childId);
+      const targetIndex = targetChildPositions.get(childId);
+      return baseIndex === undefined || targetIndex === undefined || baseIndex !== targetIndex;
     }).length,
     changedNodeCount: collectChangedNodesWithinSubtree(base, target, nodeId),
     baseNodeCount: getSubtreeNodeCount(base, nodeId),
@@ -403,67 +364,6 @@ function isEffectivelyHidden<TTypes extends NodeTypeMap>(
   }
 
   return false;
-}
-
-function encodeRuntimeValueForPointer<TTypes extends NodeTypeMap>(
-  schemas: CompiledSchemas<TTypes>,
-  nodeType: string,
-  pointer: JsonPointer,
-  value: unknown,
-): PersistedValue {
-  const adapter = getAdapterForSchemas(schemas, nodeType, pointer);
-  if (isJsonValue(value)) {
-    if (Array.isArray(value)) {
-      return value.map((item, index) =>
-        encodeRuntimeValueForPointer(schemas, nodeType, joinJsonPointer(pointer, index), item),
-      ) as PersistedValue;
-    }
-
-    if (isPlainObject(value)) {
-      const encoded: Record<string, PersistedValue> = {};
-      for (const key of Object.keys(value)) {
-        encoded[key] = encodeRuntimeValueForPointer(
-          schemas,
-          nodeType,
-          joinJsonPointer(pointer, key),
-          value[key],
-        );
-      }
-      return encoded as PersistedValue;
-    }
-
-    return encodePersistedValue(value, adapter as never);
-  }
-
-  if (Array.isArray(value)) {
-    return value.map((item, index) =>
-      encodeRuntimeValueForPointer(schemas, nodeType, joinJsonPointer(pointer, index), item),
-    ) as PersistedValue;
-  }
-
-  if (isPlainObject(value)) {
-    const encoded: Record<string, PersistedValue> = {};
-    for (const key of Object.keys(value)) {
-      encoded[key] = encodeRuntimeValueForPointer(
-        schemas,
-        nodeType,
-        joinJsonPointer(pointer, key),
-        value[key],
-      );
-    }
-    return encoded as PersistedValue;
-  }
-
-  if (!adapter?.codec) {
-    throw new MissingCodecError(
-      `Cannot persist non-JSON value for node type "${nodeType}" at pointer "${pointer}" without a codec.`,
-      {
-        details: { nodeType, pointer },
-      },
-    );
-  }
-
-  return encodePersistedValue(value, adapter as never);
 }
 
 function serializeReplacementSubtree<TTypes extends NodeTypeMap>(
@@ -682,7 +582,7 @@ function collectAttrOpsForNode<TTypes extends NodeTypeMap>(
 
   if (
     isAtomicForSchemas(context.schemas, String(targetNode.type), pointer) ||
-    getAdapterForSchemas(context.schemas, String(targetNode.type), pointer) ||
+    getValueAdapterForSchemas(context.schemas, String(targetNode.type), pointer) ||
     Array.isArray(baseValue) ||
     Array.isArray(targetValue) ||
     !isPlainObject(baseValue) ||
@@ -1015,24 +915,42 @@ function collectAttrOps<TTypes extends NodeTypeMap>(
 ): Array<SetAttrOp | RemoveAttrOp> {
   const ops: Array<SetAttrOp | RemoveAttrOp> = [];
 
-  for (const [nodeId, baseNode] of context.base.nodes) {
-    const targetNode = context.target.nodes.get(nodeId);
-    if (!targetNode || context.replacementRoots.has(nodeId)) {
-      continue;
-    }
-    if (isCoveredByRoots(context.base, nodeId, context.replacementRoots, false)) {
-      continue;
+  function visit(nodeId: NodeId): void {
+    if (context.replacementRoots.has(nodeId)) {
+      return;
     }
 
-    collectAttrOpsForNode(context, nodeId, "", baseNode.attrs, targetNode.attrs, ops);
+    const baseNode = context.base.nodes.get(nodeId);
+    const targetNode = context.target.nodes.get(nodeId);
+    if (!baseNode || !targetNode) {
+      return;
+    }
+
+    if (getSubtreeHash(context.base, nodeId) === getSubtreeHash(context.target, nodeId)) {
+      return;
+    }
+
+    if (getNodeHash(context.base, nodeId) !== getNodeHash(context.target, nodeId)) {
+      collectAttrOpsForNode(context, nodeId, "", baseNode.attrs, targetNode.attrs, ops);
+    }
+
+    const targetChildIds = new Set(targetNode.childIds);
+    for (const childId of baseNode.childIds) {
+      if (!targetChildIds.has(childId)) {
+        continue;
+      }
+      visit(childId);
+    }
   }
+
+  visit(context.base.rootId);
 
   return ops.sort((left, right) => {
     if (left.nodeId !== right.nodeId) {
       return left.nodeId.localeCompare(right.nodeId);
     }
-      return left.path.localeCompare(right.path);
-    });
+    return left.path.localeCompare(right.path);
+  });
 }
 
 function collectReplacementOps<TTypes extends NodeTypeMap>(

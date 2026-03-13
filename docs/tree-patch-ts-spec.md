@@ -635,6 +635,7 @@ export type Guard =
 - During `validatePatch()`, the same sequential semantics MUST be used, but validation MUST NOT commit external state.
 - Guard evaluation MUST be deterministic.
 - A failed guard MUST yield a conflict.
+- A `nodeTypeIs` guard against a missing node MUST fail as a guard conflict rather than producing a separate `NodeMissing` conflict kind.
 - A successful guard MUST NOT mutate state.
 
 ### 10.3 Recommended usage
@@ -847,10 +848,11 @@ The library MUST provide an ergonomic builder API.
 const patch = patchBuilder<ContentTypes>()
   .patchId("fr-home")
   .baseRevision(source.revision)
-  .setAttr("hero", ["title"], "Promotions d'été", {
+  .node("hero", "Hero")
+  .set(["title"], "Promotions d'été", {
     expect: "Summer Sale",
   })
-  .setAttr("hero", ["image", "url"], "/img/fr.png", {
+  .set(["image", "url"], "/img/fr.png", {
     expect: "/img/en.png",
   })
   .hideNode("legal-us-only")
@@ -1230,13 +1232,14 @@ const source: TreeDocument<ContentTypes> = {
 const patch = patchBuilder<ContentTypes>()
   .patchId("fr-FR:home")
   .baseRevision("rev-1")
-  .setAttr("hero", ["title"], "Promotions d'été", {
+  .node("hero", "Hero")
+  .set(["title"], "Promotions d'été", {
     expect: "Summer Sale",
   })
-  .setAttr("hero", ["image", "url"], "/img/fr.png", {
+  .set(["image", "url"], "/img/fr.png", {
     expect: "/img/en.png",
   })
-  .setAttr("hero", ["style", "fontSize"], 28, {
+  .set(["style", "fontSize"], 28, {
     expect: 32,
   })
   .hideNode("legal-us-only")

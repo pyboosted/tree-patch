@@ -236,6 +236,21 @@ test("diffTrees emits removeNode for missing patch-owned nodes", () => {
   );
 });
 
+test("diffTrees skips unchanged subtrees when collecting attribute ops", () => {
+  const baseDocument = createBaseDocument("rev-1");
+  const targetDocument = createBaseDocument("rev-1");
+  targetDocument.root.children[0]!.attrs.title = "Localized title";
+
+  const base = createTree(baseDocument);
+  const target = createTree(targetDocument);
+  const patch = assertDiffRoundTrip(base, target);
+
+  assert.deepEqual(
+    patch.ops.map((op) => op.opId),
+    ["set:hero:/title"],
+  );
+});
+
 test("diffTrees uses replaceSubtree for type changes and honors replacement thresholds", () => {
   const base = createTree(createBaseDocument("rev-1"));
   const typeChanged = createTree({

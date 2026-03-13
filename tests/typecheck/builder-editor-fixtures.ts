@@ -63,9 +63,9 @@ const document: TreeDocument<ContentTypes> = {
 const source = createDocument(document);
 
 const builder = patchBuilder<ContentTypes>();
-builder.setAttr("hero", ["title"], "Promotions");
-builder.setAttr("hero", ["style", "fontSize"], 32);
-builder.setAttr("hero", ["deep", "l1", "l2", "l3", "l4"], "deep value");
+builder.node("hero", "Hero").set(["title"], "Promotions");
+builder.node("hero", "Hero").set(["style", "fontSize"], 32);
+builder.node("hero", "Hero").set(["deep", "l1", "l2", "l3", "l4"], "deep value");
 builder.insertNode("root", {
   id: "promo",
   type: "RichText",
@@ -80,14 +80,20 @@ editor.node("hero", "Hero").set(["image", "url"], "/img/fr.png");
 editor.node("hero", "Hero").set(["style", "fontSize"], 28);
 editor.node("legal", "RichText").set(["html"], "<p>Updated</p>");
 
+// @ts-expect-error root builder no longer exposes field methods
+builder.setAttr("hero", ["title"], "x");
+
 // @ts-expect-error invalid builder path
-builder.setAttr("hero", ["missing"], "x");
+builder.node("hero", "Hero").set(["missing"], "x");
 
 // @ts-expect-error invalid builder value type
-builder.setAttr("hero", ["style", "fontSize"], "large");
+builder.node("hero", "Hero").set(["style", "fontSize"], "large");
 
 // @ts-expect-error invalid deep path value type
-builder.setAttr("hero", ["deep", "l1", "l2", "l3", "l4"], 42);
+builder.node("hero", "Hero").set(["deep", "l1", "l2", "l3", "l4"], 42);
+
+// @ts-expect-error cross-type builder path
+builder.node("hero", "Hero").set(["html"], "<p>wrong</p>");
 
 // @ts-expect-error invalid editor path for Hero node
 editor.node("hero", "Hero").set(["html"], "<p>wrong</p>");

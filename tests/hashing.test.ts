@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import test from "node:test";
 
 import { createDocument } from "../src/index.js";
@@ -90,3 +91,10 @@ test("atomic schema paths are opaque but still change hashes when inner data cha
   assert.notEqual(getSubtreeHash(treeA, "root"), getSubtreeHash(treeB, "root"));
 });
 
+test("portable hashing no longer depends on node crypto runtime imports", () => {
+  const hashSource = readFileSync(new URL("../src/core/hash.ts", import.meta.url), "utf8");
+  const diffSource = readFileSync(new URL("../src/core/diff.ts", import.meta.url), "utf8");
+
+  assert.doesNotMatch(hashSource, /node:crypto|createHash\(/);
+  assert.doesNotMatch(diffSource, /node:crypto|createHash\(/);
+});

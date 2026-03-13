@@ -24,6 +24,7 @@ import type {
   ValidateOptions,
   ValidationResult,
 } from "./types.js";
+import { materializeMap, materializeSet } from "./cow.js";
 import { InvalidPointerError, MissingCodecError } from "./errors.js";
 import { createReadonlyMapView, deepFreezePlainData, isPlainObject } from "./snapshot.js";
 import { attachTreeState } from "./state.js";
@@ -57,13 +58,15 @@ import {
 } from "./patch-validation.js";
 
 interface ExecutionContext<TTypes extends NodeTypeMap> {
-  readonly source: IndexedTree<TTypes>;
-  readonly patch: TreePatch;
   readonly overlay: OverlayState<TTypes>;
-  readonly mode: "atomic" | "preview";
 }
 
 type OperationResult = { ok: true } | { ok: false; conflict: PatchConflict };
+
+export interface PatchExecutionSession<TTypes extends NodeTypeMap> {
+  readonly overlay: OverlayState<TTypes>;
+  readonly tree: IndexedTree<TTypes>;
+}
 
 export interface ExecutePatchInternalResult<TTypes extends NodeTypeMap> {
   revision: RevisionStatus;
@@ -1242,6 +1245,23 @@ function applyOperation<TTypes extends NodeTypeMap>(
   }
 }
 
+export function createPatchExecutionSession<TTypes extends NodeTypeMap>(
+  source: IndexedTree<TTypes>,
+): PatchExecutionSession<TTypes> {
+  const overlay = createOverlayState(source);
+  return {
+    overlay,
+    tree: overlay.treeView,
+  };
+}
+
+export function applyOperationInSession<TTypes extends NodeTypeMap>(
+  session: PatchExecutionSession<TTypes>,
+  op: PatchOp,
+): OperationResult {
+  return applyOperation({ overlay: session.overlay }, op);
+}
+
 function freezeNodeForSnapshot<TTypes extends NodeTypeMap>(
   overlay: OverlayState<TTypes>,
   node: IndexedNode<TTypes>,
@@ -1265,7 +1285,20 @@ function buildSnapshotFromOverlay<TTypes extends NodeTypeMap>(
     frozenNodes.set(nodeId, freezeNodeForSnapshot(overlay, node));
   }
 
+  const pathHashByNodeId = new Map<NodeId, Map<JsonPointer, string>>();
+  for (const [nodeId, hashes] of overlay.cache.pathHashByNodeId) {
+    pathHashByNodeId.set(nodeId, materializeMap(hashes));
+  }
+
   overlay.nodes = frozenNodes;
+  overlay.index.parentById = materializeMap(overlay.index.parentById);
+  overlay.index.positionById = materializeMap(overlay.index.positionById);
+  overlay.index.depthById = materializeMap(overlay.index.depthById);
+  overlay.cache.nodeHashById = materializeMap(overlay.cache.nodeHashById);
+  overlay.cache.subtreeHashById = materializeMap(overlay.cache.subtreeHashById);
+  overlay.cache.pathHashByNodeId = pathHashByNodeId;
+  overlay.explicitHidden = materializeSet(overlay.explicitHidden);
+  overlay.patchOwned = materializeSet(overlay.patchOwned);
 
   const tree = {
     rootId: overlay.rootId,
@@ -1346,20 +1379,14 @@ export function executePatchInternal<TTypes extends NodeTypeMap>(
 ): ExecutePatchInternalResult<TTypes> {
   assertPatchEnvelope(patch);
 
-  const overlay = createOverlayState(source);
-  const context: ExecutionContext<TTypes> = {
-    source,
-    patch,
-    overlay,
-    mode: options.mode,
-  };
+  const session = createPatchExecutionSession(source);
   const conflicts: PatchConflict[] = [];
   const appliedOps: PatchOp[] = [];
   const appliedOpIds: string[] = [];
   const skippedOpIds: string[] = [];
 
   for (const op of patch.ops) {
-    const result = applyOperation(context, op);
+    const result = applyOperationInSession(session, op);
     if (!result.ok) {
       conflicts.push(result.conflict);
       skippedOpIds.push(op.opId);
@@ -1378,10 +1405,10 @@ export function executePatchInternal<TTypes extends NodeTypeMap>(
     return { revision, conflicts, appliedOps, appliedOpIds, skippedOpIds };
   }
 
-  const tree = buildSnapshotFromOverlay(overlay);
+  const tree = buildSnapshotFromOverlay(session.overlay);
   const materialized = buildMaterializedTree(
-    overlay,
-    overlay.rootId,
+    session.overlay,
+    session.overlay.rootId,
     options.includeHidden,
     false,
   ) as MaterializedNode<TTypes>;

@@ -169,6 +169,7 @@ export function encodePersistedValue<TValue>(
 }
 
 export function isEncodedValue(value: PersistedValue): value is EncodedValue {
+  // The {$codec, value} object shape is reserved wire syntax for persisted codec envelopes.
   return (
     typeof value === "object" &&
     value !== null &&

@@ -5,7 +5,7 @@ function createReadonlyMutationError(method: string): () => never {
 }
 
 export function createReadonlyMapView<TKey, TValue>(
-  map: Map<TKey, TValue>,
+  map: ReadonlyMap<TKey, TValue>,
 ): ReadonlyMap<TKey, TValue> {
   return new Proxy(map, {
     get(target, property, receiver) {
@@ -45,4 +45,3 @@ export function deepFreezePlainData<T>(value: T): T {
 
   return value;
 }
-

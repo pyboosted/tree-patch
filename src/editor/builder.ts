@@ -9,53 +9,37 @@ import type {
   NodeId,
   NodeTypeMap,
   PatchOp,
-  PersistedValue,
   SerializedPatchNode,
   TreePatch,
   TreeSchema,
 } from "../core/types.js";
+import {
+  createPatchExecutionSession,
+  applyOperationInSession,
+  type PatchExecutionSession,
+} from "../core/apply.js";
 import {
   EditorNodeMissingError,
   EditorNodeTypeMismatchError,
   MalformedPatchError,
   MissingPatchIdError,
 } from "../core/errors.js";
-import { applyPatch } from "../core/apply.js";
-import { getPathHash, getSubtreeHash, joinJsonPointer } from "../core/hash.js";
-import { normalizePosition, assertPatchEnvelope } from "../core/patch-validation.js";
+import { getPathHash, getSubtreeHash } from "../core/hash.js";
+import { assertPatchEnvelope, normalizePosition } from "../core/patch-validation.js";
 import { isPlainObject } from "../core/snapshot.js";
 import { getTreeState } from "../core/state.js";
-import {
-  cloneJsonValue,
-  deepEqual,
-  encodePersistedValue,
-  isJsonValue,
-} from "../schema/adapters.js";
+import { deepEqual } from "../schema/adapters.js";
 import { pathToPointer, resolvePointer } from "../schema/pointers.js";
 import type { CompiledTreeSchema } from "../schema/schema.js";
+import { compileTreeSchema } from "../schema/schema.js";
 import {
-  compileTreeSchema,
-  getValueAdapterForPointer,
-  isAtomicPointer,
-} from "../schema/schema.js";
+  type CompiledSchemas,
+  encodeRuntimeValueForPointer,
+  getValueAdapterForSchemas,
+  isAtomicForSchemas,
+} from "../schema/runtime-values.js";
 
 type NodeTypeKey<TTypes extends NodeTypeMap> = Extract<keyof TTypes, string>;
-
-type BuilderAttrPath<TTypes extends NodeTypeMap> = {
-  [K in NodeTypeKey<TTypes>]: AttrPath<TTypes[K]>;
-}[NodeTypeKey<TTypes>];
-
-type BuilderAttrValue<
-  TTypes extends NodeTypeMap,
-  TPath extends BuilderAttrPath<TTypes>,
-> = {
-  [K in NodeTypeKey<TTypes>]:
-    TPath extends AttrPath<TTypes[K]>
-      ? DeepValue<TTypes[K], Extract<TPath, AttrPath<TTypes[K]>>>
-      : never;
-}[NodeTypeKey<TTypes>];
-
-type CompiledSchemas<TTypes extends NodeTypeMap> = readonly CompiledTreeSchema<TTypes>[];
 
 export interface PatchBuilderFieldOptions<TValue> {
   expect?: TValue;
@@ -76,45 +60,25 @@ export interface CreateEditorOptions<TTypes extends NodeTypeMap> {
   metadata?: Record<string, unknown>;
 }
 
-export interface PatchBuilder<TTypes extends NodeTypeMap> {
-  patchId(patchId: string): PatchBuilder<TTypes>;
-  baseRevision(baseRevision?: string): PatchBuilder<TTypes>;
-  metadata(metadata?: Record<string, unknown>): PatchBuilder<TTypes>;
-  setAttr<TPath extends BuilderAttrPath<TTypes>>(
-    nodeId: NodeId,
-    path: TPath,
-    value: BuilderAttrValue<TTypes, TPath>,
-    options?: PatchBuilderFieldOptions<BuilderAttrValue<TTypes, TPath>>,
-  ): PatchBuilder<TTypes>;
-  removeAttr<TPath extends BuilderAttrPath<TTypes>>(
-    nodeId: NodeId,
-    path: TPath,
-    options?: PatchBuilderFieldOptions<BuilderAttrValue<TTypes, TPath>>,
-  ): PatchBuilder<TTypes>;
-  hideNode(nodeId: NodeId): PatchBuilder<TTypes>;
-  showNode(nodeId: NodeId): PatchBuilder<TTypes>;
-  insertNode<TType extends NodeTypeKey<TTypes>>(
-    parentId: NodeId,
-    node: AnyTreeNode<TTypes> & { type: TType },
-    position?: ChildPosition,
-  ): PatchBuilder<TTypes>;
-  moveNode(
-    nodeId: NodeId,
-    newParentId: NodeId,
-    position?: ChildPosition,
-  ): PatchBuilder<TTypes>;
-  replaceSubtree(
-    nodeId: NodeId,
-    node: AnyTreeNode<TTypes>,
-  ): PatchBuilder<TTypes>;
-  removeNode(nodeId: NodeId): PatchBuilder<TTypes>;
-  build(): TreePatch;
-}
+type PatchBuilderChainMethods<TTypes extends NodeTypeMap> = Pick<
+  PatchBuilder<TTypes>,
+  | "patchId"
+  | "baseRevision"
+  | "metadata"
+  | "node"
+  | "hideNode"
+  | "showNode"
+  | "insertNode"
+  | "moveNode"
+  | "replaceSubtree"
+  | "removeNode"
+  | "build"
+>;
 
 export interface NodeEditor<
   TTypes extends NodeTypeMap,
   TType extends NodeTypeKey<TTypes>,
-> {
+> extends PatchBuilderChainMethods<TTypes> {
   set<TPath extends AttrPath<TTypes[TType]>>(
     path: TPath,
     value: DeepValue<TTypes[TType], TPath>,
@@ -135,12 +99,35 @@ export interface NodeEditor<
   removeNode(): NodeEditor<TTypes, TType>;
 }
 
-export interface TreeEditor<TTypes extends NodeTypeMap> extends PatchBuilder<TTypes> {
+export interface PatchBuilder<TTypes extends NodeTypeMap> {
+  patchId(patchId: string): PatchBuilder<TTypes>;
+  baseRevision(baseRevision?: string): PatchBuilder<TTypes>;
+  metadata(metadata?: Record<string, unknown>): PatchBuilder<TTypes>;
   node<TType extends NodeTypeKey<TTypes>>(
     nodeId: NodeId,
     claimedType: TType,
   ): NodeEditor<TTypes, TType>;
+  hideNode(nodeId: NodeId): PatchBuilder<TTypes>;
+  showNode(nodeId: NodeId): PatchBuilder<TTypes>;
+  insertNode<TType extends NodeTypeKey<TTypes>>(
+    parentId: NodeId,
+    node: AnyTreeNode<TTypes> & { type: TType },
+    position?: ChildPosition,
+  ): PatchBuilder<TTypes>;
+  moveNode(
+    nodeId: NodeId,
+    newParentId: NodeId,
+    position?: ChildPosition,
+  ): PatchBuilder<TTypes>;
+  replaceSubtree(
+    nodeId: NodeId,
+    node: AnyTreeNode<TTypes>,
+  ): PatchBuilder<TTypes>;
+  removeNode(nodeId: NodeId): PatchBuilder<TTypes>;
+  build(): TreePatch;
 }
+
+export interface TreeEditor<TTypes extends NodeTypeMap> extends PatchBuilder<TTypes> {}
 
 function createOpIdFactory() {
   const counters = new Map<string, number>();
@@ -182,29 +169,6 @@ function getCompiledSchemas<TTypes extends NodeTypeMap>(
   return schemas;
 }
 
-function getAdapterForSchemas<TTypes extends NodeTypeMap>(
-  schemas: CompiledSchemas<TTypes>,
-  nodeType: string,
-  pointer: JsonPointer,
-) {
-  for (const schema of schemas) {
-    const adapter = getValueAdapterForPointer(schema, nodeType, pointer);
-    if (adapter) {
-      return adapter;
-    }
-  }
-
-  return undefined;
-}
-
-function isAtomicForSchemas<TTypes extends NodeTypeMap>(
-  schemas: CompiledSchemas<TTypes>,
-  nodeType: string,
-  pointer: JsonPointer,
-): boolean {
-  return schemas.some((schema) => isAtomicPointer(schema, nodeType, pointer));
-}
-
 function shouldPreferHash<TTypes extends NodeTypeMap>(
   schemas: CompiledSchemas<TTypes>,
   nodeType: string | undefined,
@@ -216,86 +180,11 @@ function shouldPreferHash<TTypes extends NodeTypeMap>(
   }
 
   return (
-    getAdapterForSchemas(schemas, nodeType, pointer) !== undefined ||
+    getValueAdapterForSchemas(schemas, nodeType, pointer) !== undefined ||
     isAtomicForSchemas(schemas, nodeType, pointer) ||
     Array.isArray(value) ||
     isPlainObject(value)
   );
-}
-
-function encodeRuntimeValueForPointer<TTypes extends NodeTypeMap>(
-  schemas: CompiledSchemas<TTypes>,
-  nodeType: string | undefined,
-  pointer: JsonPointer,
-  value: unknown,
-): PersistedValue {
-  if (!nodeType) {
-    if (!isJsonValue(value)) {
-      throw new MalformedPatchError(
-        `Cannot serialize non-JSON value at pointer "${pointer}" without a source-backed node type.`,
-        {
-          details: { pointer },
-        },
-      );
-    }
-
-    return cloneJsonValue(value);
-  }
-
-  const adapter = getAdapterForSchemas(schemas, nodeType, pointer);
-  if (isJsonValue(value)) {
-    if (Array.isArray(value)) {
-      return value.map((item, index) =>
-        encodeRuntimeValueForPointer(
-          schemas,
-          nodeType,
-          joinJsonPointer(pointer, index),
-          item,
-        ),
-      ) as PersistedValue;
-    }
-
-    if (isPlainObject(value)) {
-      const encoded: Record<string, PersistedValue> = {};
-      for (const key of Object.keys(value)) {
-        encoded[key] = encodeRuntimeValueForPointer(
-          schemas,
-          nodeType,
-          joinJsonPointer(pointer, key),
-          value[key],
-        );
-      }
-      return encoded as PersistedValue;
-    }
-
-    return encodePersistedValue(value, adapter as never);
-  }
-
-  if (Array.isArray(value)) {
-    return value.map((item, index) =>
-      encodeRuntimeValueForPointer(
-        schemas,
-        nodeType,
-        joinJsonPointer(pointer, index),
-        item,
-      ),
-    ) as PersistedValue;
-  }
-
-  if (isPlainObject(value)) {
-    const encoded: Record<string, PersistedValue> = {};
-    for (const key of Object.keys(value)) {
-      encoded[key] = encodeRuntimeValueForPointer(
-        schemas,
-        nodeType,
-        joinJsonPointer(pointer, key),
-        value[key],
-      );
-    }
-    return encoded as PersistedValue;
-  }
-
-  return encodePersistedValue(value, adapter as never);
 }
 
 function serializeNodeSubtree<TTypes extends NodeTypeMap>(
@@ -313,12 +202,7 @@ function serializeNodeSubtree<TTypes extends NodeTypeMap>(
   return {
     id: node.id,
     type: String(node.type),
-    attrs: encodeRuntimeValueForPointer(
-      schemas,
-      String(node.type),
-      "",
-      node.attrs,
-    ),
+    attrs: encodeRuntimeValueForPointer(schemas, String(node.type), "", node.attrs),
     children: node.children.map((child) => serializeNodeSubtree(schemas, child, seenIds)),
   };
 }
@@ -347,7 +231,8 @@ function createAnchorGuards(
 
 class PatchBuilderController<TTypes extends NodeTypeMap> {
   private readonly schemas: CompiledSchemas<TTypes>;
-  private currentTree: IndexedTree<TTypes> | undefined;
+  private readonly validationSession: PatchExecutionSession<TTypes> | undefined;
+  private readonly currentTree: IndexedTree<TTypes> | undefined;
   private patchIdValue: string | undefined;
   private baseRevisionValue: string | undefined;
   private metadataValue: Record<string, unknown> | undefined;
@@ -356,7 +241,10 @@ class PatchBuilderController<TTypes extends NodeTypeMap> {
 
   constructor(options: PatchBuilderOptions<TTypes>) {
     this.schemas = getCompiledSchemas(options.source, options.schema);
-    this.currentTree = options.source;
+    this.validationSession = options.source
+      ? createPatchExecutionSession(options.source)
+      : undefined;
+    this.currentTree = this.validationSession?.tree ?? options.source;
     this.patchIdValue = options.patchId;
     this.baseRevisionValue = options.baseRevision ?? options.source?.revision;
     this.metadataValue = cloneMetadata(options.metadata);
@@ -374,17 +262,21 @@ class PatchBuilderController<TTypes extends NodeTypeMap> {
     this.metadataValue = cloneMetadata(metadata);
   }
 
-  getCurrentTree(): IndexedTree<TTypes> | undefined {
-    return this.currentTree;
+  private getNode(nodeId: NodeId) {
+    return this.currentTree?.nodes.get(nodeId);
   }
 
-  ensureEditorNode<TType extends NodeTypeKey<TTypes>>(
+  ensureNodeHandle<TType extends NodeTypeKey<TTypes>>(
     nodeId: NodeId,
     claimedType: TType,
+    requireExisting: boolean,
   ): void {
-    const node = this.currentTree?.nodes.get(nodeId);
+    const node = this.getNode(nodeId);
     if (!node) {
-      throw new EditorNodeMissingError(nodeId);
+      if (requireExisting) {
+        throw new EditorNodeMissingError(nodeId);
+      }
+      return;
     }
 
     const actualType = String(node.type);
@@ -394,7 +286,7 @@ class PatchBuilderController<TTypes extends NodeTypeMap> {
   }
 
   private resolveNodeType(nodeId: NodeId, explicitNodeType?: string): string | undefined {
-    const node = this.currentTree?.nodes.get(nodeId);
+    const node = this.getNode(nodeId);
     if (!node) {
       return explicitNodeType;
     }
@@ -413,55 +305,52 @@ class PatchBuilderController<TTypes extends NodeTypeMap> {
     expected: unknown,
     nodeType: string | undefined,
   ): Guard[] {
-    const currentTree = this.currentTree;
-    if (currentTree) {
-      const currentNode = currentTree.nodes.get(nodeId);
-      if (currentNode) {
-        const resolution = resolvePointer(currentNode.attrs, pointer);
-        if (resolution.ok) {
-          const encodedActual = encodeRuntimeValueForPointer(
-            this.schemas,
-            nodeType,
-            pointer,
-            resolution.value,
-          );
-          const encodedExpected = encodeRuntimeValueForPointer(
-            this.schemas,
-            nodeType,
-            pointer,
-            expected,
-          );
+    const currentNode = this.getNode(nodeId);
+    if (currentNode) {
+      const resolution = resolvePointer(currentNode.attrs, pointer);
+      if (resolution.ok) {
+        const encodedActual = encodeRuntimeValueForPointer(
+          this.schemas,
+          nodeType,
+          pointer,
+          resolution.value,
+        );
+        const encodedExpected = encodeRuntimeValueForPointer(
+          this.schemas,
+          nodeType,
+          pointer,
+          expected,
+        );
 
-          if (!deepEqual(encodedActual, encodedExpected)) {
-            throw new MalformedPatchError(
-              `Expected value for node "${nodeId}" at "${pointer}" does not match the current builder state.`,
-              {
-                details: {
-                  nodeId,
-                  path: pointer,
-                  actual: encodedActual,
-                  expected: encodedExpected,
-                },
+        if (!deepEqual(encodedActual, encodedExpected)) {
+          throw new MalformedPatchError(
+            `Expected value for node "${nodeId}" at "${pointer}" does not match the current builder state.`,
+            {
+              details: {
+                nodeId,
+                path: pointer,
+                actual: encodedActual,
+                expected: encodedExpected,
               },
-            );
-          }
+            },
+          );
+        }
 
-          if (shouldPreferHash(this.schemas, nodeType, pointer, resolution.value)) {
-            return [{
-              kind: "attrHash",
-              nodeId,
-              path: pointer,
-              hash: getPathHash(currentTree, nodeId, pointer),
-            }];
-          }
-
+        if (shouldPreferHash(this.schemas, nodeType, pointer, resolution.value)) {
           return [{
-            kind: "attrEquals",
+            kind: "attrHash",
             nodeId,
             path: pointer,
-            value: encodedActual,
+            hash: getPathHash(this.currentTree as IndexedTree<TTypes>, nodeId, pointer),
           }];
         }
+
+        return [{
+          kind: "attrEquals",
+          nodeId,
+          path: pointer,
+          value: encodedActual,
+        }];
       }
     }
 
@@ -474,23 +363,16 @@ class PatchBuilderController<TTypes extends NodeTypeMap> {
   }
 
   private commitOp(op: PatchOp): void {
-    if (this.currentTree) {
-      const validationPatch: TreePatch = {
-        format: "tree-patch/v1",
-        patchId: this.patchIdValue ?? "__builder__",
-        ops: [op],
-      };
-      const result = applyPatch(this.currentTree, validationPatch);
-      if (result.status === "conflict") {
+    if (this.validationSession) {
+      const result = applyOperationInSession(this.validationSession, op);
+      if (!result.ok) {
         throw new MalformedPatchError(
-          `Builder operation "${op.opId}" is invalid against the current builder state: ${result.conflicts[0]?.message ?? "unknown conflict"}`,
+          `Builder operation "${op.opId}" is invalid against the current builder state: ${result.conflict.message}`,
           {
-            details: { opId: op.opId, conflict: result.conflicts[0] },
+            details: { opId: op.opId, conflict: result.conflict },
           },
         );
       }
-
-      this.currentTree = result.tree;
     }
 
     this.ops.push(op);
@@ -607,9 +489,12 @@ class PatchBuilderController<TTypes extends NodeTypeMap> {
       guards.push({ kind: "nodeTypeIs", nodeId, nodeType });
     }
 
-    const currentParentId = this.currentTree?.index.parentById.get(nodeId);
-    if (this.currentTree?.nodes.has(nodeId)) {
-      guards.push({ kind: "parentIs", nodeId, parentId: currentParentId ?? null });
+    if (this.getNode(nodeId)) {
+      guards.push({
+        kind: "parentIs",
+        nodeId,
+        parentId: this.currentTree?.index.parentById.get(nodeId) ?? null,
+      });
     }
 
     this.commitOp({
@@ -636,11 +521,11 @@ class PatchBuilderController<TTypes extends NodeTypeMap> {
     }
 
     const guards: Guard[] = [];
-    if (this.currentTree?.nodes.has(nodeId)) {
+    if (this.getNode(nodeId)) {
       guards.push({
         kind: "subtreeHash",
         nodeId,
-        hash: getSubtreeHash(this.currentTree, nodeId),
+        hash: getSubtreeHash(this.currentTree as IndexedTree<TTypes>, nodeId),
       });
     }
 
@@ -660,9 +545,12 @@ class PatchBuilderController<TTypes extends NodeTypeMap> {
       guards.push({ kind: "nodeTypeIs", nodeId, nodeType });
     }
 
-    const currentParentId = this.currentTree?.index.parentById.get(nodeId);
-    if (this.currentTree?.nodes.has(nodeId)) {
-      guards.push({ kind: "parentIs", nodeId, parentId: currentParentId ?? null });
+    if (this.getNode(nodeId)) {
+      guards.push({
+        kind: "parentIs",
+        nodeId,
+        parentId: this.currentTree?.index.parentById.get(nodeId) ?? null,
+      });
     }
 
     this.commitOp({
@@ -693,8 +581,55 @@ class PatchBuilderController<TTypes extends NodeTypeMap> {
   }
 }
 
+function createNodeApi<
+  TTypes extends NodeTypeMap,
+  TType extends NodeTypeKey<TTypes>,
+>(
+  controller: PatchBuilderController<TTypes>,
+  rootApi: PatchBuilderChainMethods<TTypes>,
+  nodeId: NodeId,
+  claimedType: TType,
+): NodeEditor<TTypes, TType> {
+  const nodeApi = { ...rootApi } as NodeEditor<TTypes, TType>;
+  nodeApi.set = (path, value, options) => {
+    controller.addSetAttr(nodeId, path, value, options, claimedType);
+    return nodeApi;
+  };
+  nodeApi.remove = (path, options) => {
+    controller.addRemoveAttr(nodeId, path, options, claimedType);
+    return nodeApi;
+  };
+  nodeApi.hide = () => {
+    controller.addHideNode(nodeId, claimedType);
+    return nodeApi;
+  };
+  nodeApi.show = () => {
+    controller.addShowNode(nodeId, claimedType);
+    return nodeApi;
+  };
+  nodeApi.insert = (node, position) => {
+    controller.addInsertNode(nodeId, node, position);
+    return nodeApi;
+  };
+  nodeApi.move = (newParentId, position) => {
+    controller.addMoveNode(nodeId, newParentId, position, claimedType);
+    return nodeApi;
+  };
+  nodeApi.replace = (node) => {
+    controller.addReplaceSubtree(nodeId, node);
+    return nodeApi;
+  };
+  nodeApi.removeNode = () => {
+    controller.addRemoveNode(nodeId, claimedType);
+    return nodeApi;
+  };
+
+  return nodeApi;
+}
+
 function createBuilderApi<TTypes extends NodeTypeMap>(
   controller: PatchBuilderController<TTypes>,
+  requireExistingNodeHandles: boolean,
 ): PatchBuilder<TTypes> {
   const api: PatchBuilder<TTypes> = {
     patchId(patchId) {
@@ -709,13 +644,9 @@ function createBuilderApi<TTypes extends NodeTypeMap>(
       controller.setMetadata(metadata);
       return api;
     },
-    setAttr(nodeId, path, value, options) {
-      controller.addSetAttr(nodeId, path, value, options);
-      return api;
-    },
-    removeAttr(nodeId, path, options) {
-      controller.addRemoveAttr(nodeId, path, options);
-      return api;
+    node(nodeId, claimedType) {
+      controller.ensureNodeHandle(nodeId, claimedType, requireExistingNodeHandles);
+      return createNodeApi(controller, api, nodeId, claimedType);
     },
     hideNode(nodeId) {
       controller.addHideNode(nodeId);
@@ -752,111 +683,21 @@ function createBuilderApi<TTypes extends NodeTypeMap>(
 export function patchBuilder<TTypes extends NodeTypeMap>(
   options: PatchBuilderOptions<TTypes> = {},
 ): PatchBuilder<TTypes> {
-  return createBuilderApi(new PatchBuilderController(options));
+  return createBuilderApi(new PatchBuilderController(options), options.source !== undefined);
 }
 
 export function createEditor<TTypes extends NodeTypeMap>(
   source: IndexedTree<TTypes>,
   options: CreateEditorOptions<TTypes> = {},
 ): TreeEditor<TTypes> {
-  const controller = new PatchBuilderController<TTypes>({
-    source,
-    ...(options.schema !== undefined ? { schema: options.schema } : {}),
-    ...(options.patchId !== undefined ? { patchId: options.patchId } : {}),
-    ...((options.baseRevision ?? source.revision) !== undefined
-      ? { baseRevision: options.baseRevision ?? source.revision }
-      : {}),
-    ...(options.metadata !== undefined ? { metadata: options.metadata } : {}),
-  });
-
-  const editorApi: TreeEditor<TTypes> = {
-    patchId(patchId) {
-      controller.setPatchId(patchId);
-      return editorApi;
-    },
-    baseRevision(baseRevision) {
-      controller.setBaseRevision(baseRevision);
-      return editorApi;
-    },
-    metadata(metadata) {
-      controller.setMetadata(metadata);
-      return editorApi;
-    },
-    setAttr(nodeId, path, value, options) {
-      controller.addSetAttr(nodeId, path, value, options);
-      return editorApi;
-    },
-    removeAttr(nodeId, path, options) {
-      controller.addRemoveAttr(nodeId, path, options);
-      return editorApi;
-    },
-    hideNode(nodeId) {
-      controller.addHideNode(nodeId);
-      return editorApi;
-    },
-    showNode(nodeId) {
-      controller.addShowNode(nodeId);
-      return editorApi;
-    },
-    insertNode(parentId, node, position) {
-      controller.addInsertNode(parentId, node, position);
-      return editorApi;
-    },
-    moveNode(nodeId, newParentId, position) {
-      controller.addMoveNode(nodeId, newParentId, position);
-      return editorApi;
-    },
-    replaceSubtree(nodeId, node) {
-      controller.addReplaceSubtree(nodeId, node);
-      return editorApi;
-    },
-    removeNode(nodeId) {
-      controller.addRemoveNode(nodeId);
-      return editorApi;
-    },
-    build() {
-      return controller.build();
-    },
-    node(nodeId, claimedType) {
-      controller.ensureEditorNode(nodeId, claimedType);
-      const nodeApi: NodeEditor<TTypes, typeof claimedType> = {
-        set(path, value, options) {
-          controller.addSetAttr(nodeId, path, value, options, claimedType);
-          return nodeApi;
-        },
-        remove(path, options) {
-          controller.addRemoveAttr(nodeId, path, options, claimedType);
-          return nodeApi;
-        },
-        hide() {
-          controller.addHideNode(nodeId, claimedType);
-          return nodeApi;
-        },
-        show() {
-          controller.addShowNode(nodeId, claimedType);
-          return nodeApi;
-        },
-        insert(node, position) {
-          controller.addInsertNode(nodeId, node, position);
-          return nodeApi;
-        },
-        move(newParentId, position) {
-          controller.addMoveNode(nodeId, newParentId, position, claimedType);
-          return nodeApi;
-        },
-        replace(node) {
-          controller.addReplaceSubtree(nodeId, node);
-          return nodeApi;
-        },
-        removeNode() {
-          controller.addRemoveNode(nodeId, claimedType);
-          return nodeApi;
-        },
-      };
-
-      return nodeApi;
-    },
-  };
-
-  return editorApi;
+  return createBuilderApi(
+    new PatchBuilderController<TTypes>({
+      source,
+      ...(options.schema !== undefined ? { schema: options.schema } : {}),
+      ...(options.patchId !== undefined ? { patchId: options.patchId } : {}),
+      ...(options.baseRevision !== undefined ? { baseRevision: options.baseRevision } : {}),
+      ...(options.metadata !== undefined ? { metadata: options.metadata } : {}),
+    }),
+    true,
+  ) as TreeEditor<TTypes>;
 }
