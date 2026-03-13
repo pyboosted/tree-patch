@@ -302,4 +302,4 @@ The compiled package is emitted to `dist/`.
 
 ## Status
 
-The implementation currently covers the v1 feature set described in [`docs/tree-patch-ts-spec.md`](./docs/tree-patch-ts-spec.md).
+The implementation currently covers the planned v1 feature set of the library.
