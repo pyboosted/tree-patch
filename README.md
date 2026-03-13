@@ -24,7 +24,13 @@ The runtime has zero Node/Bun-specific dependencies. The built library is intend
 
 ## Installation
 
-This repository currently uses a private package manifest. If you publish it, the public entrypoint is the package root:
+Install the package from npm:
+
+```bash
+npm install @hexie/tree-patch
+```
+
+Then import from the package root:
 
 ```ts
 import {
@@ -37,7 +43,7 @@ import {
   createResolutionSession,
   diffTrees,
   rebasePatch,
-} from "tree-patch";
+} from "@hexie/tree-patch";
 ```
 
 ## Core Concepts
@@ -56,7 +62,7 @@ import {
   createDocument,
   patchBuilder,
   type TreeDocument,
-} from "tree-patch";
+} from "@hexie/tree-patch";
 
 type ContentTypes = {
   Page: {};
@@ -239,7 +245,7 @@ Notes:
 Use a `TreeSchema` when you need custom equality, hashing, cloning, or persistence for runtime values.
 
 ```ts
-import { createDocument, patchBuilder, type TreeSchema } from "tree-patch";
+import { createDocument, patchBuilder, type TreeSchema } from "@hexie/tree-patch";
 
 type ContentTypes = {
   Hero: {

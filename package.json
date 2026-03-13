@@ -1,8 +1,11 @@
 {
-  "name": "tree-patch",
+  "name": "@hexie/tree-patch",
   "version": "0.1.0",
-  "private": true,
+  "description": "Immutable, conflict-aware semantic patches for tree-shaped content.",
+  "license": "MIT",
   "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
   "files": [
     "dist"
   ],
@@ -11,6 +14,26 @@
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
     }
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/pyboosted/tree-patch.git"
+  },
+  "bugs": {
+    "url": "https://github.com/pyboosted/tree-patch/issues"
+  },
+  "homepage": "https://github.com/pyboosted/tree-patch#readme",
+  "keywords": [
+    "tree",
+    "patch",
+    "diff",
+    "rebase",
+    "localization",
+    "cms",
+    "typescript"
+  ],
+  "publishConfig": {
+    "access": "public"
   },
   "scripts": {
     "build": "node --eval \"import('node:fs').then(fs => fs.rmSync('dist', { recursive: true, force: true }))\" && tsc -p tsconfig.json",
