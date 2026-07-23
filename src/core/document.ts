@@ -12,7 +12,12 @@ import {
   MalformedTreeError,
   UnsupportedRuntimeValueError,
 } from "./errors.js";
-import { createReadonlyMapView, deepFreezePlainData, isPlainObject } from "./snapshot.js";
+import {
+  createReadonlyMapView,
+  deepFreezePlainData,
+  isPlainObject,
+  setOwnEnumerableValue,
+} from "./snapshot.js";
 import { attachTreeState } from "./state.js";
 import { getSubtreeHash } from "./hash.js";
 import { cloneRuntimeValue, isJsonValue } from "../schema/adapters.js";
@@ -62,7 +67,7 @@ function assertNodeEnvelope(node: unknown, location: string, isRoot: boolean): a
   const candidate = node as Record<string, unknown>;
   const keys = Object.keys(candidate);
   for (const requiredKey of NODE_ENVELOPE_KEYS) {
-    if (!(requiredKey in candidate)) {
+    if (!Object.hasOwn(candidate, requiredKey)) {
       throw new MalformedTreeError(
         `Node at ${location} is missing required key "${requiredKey}".`,
       );
@@ -113,11 +118,15 @@ function cloneNodeValue<TTypes extends NodeTypeMap>(
     if (isPlainObject(value)) {
       const clone: Record<string, unknown> = {};
       for (const key of Object.keys(value)) {
-        clone[key] = cloneNodeValue(
-          nodeType,
-          value[key],
-          joinJsonPointer(pointer, key),
-          schema,
+        setOwnEnumerableValue(
+          clone,
+          key,
+          cloneNodeValue(
+            nodeType,
+            value[key],
+            joinJsonPointer(pointer, key),
+            schema,
+          ),
         );
       }
       return clone;
@@ -135,7 +144,11 @@ function cloneNodeValue<TTypes extends NodeTypeMap>(
   if (isPlainObject(value)) {
     const clone: Record<string, unknown> = {};
     for (const key of Object.keys(value)) {
-      clone[key] = cloneNodeValue(nodeType, value[key], joinJsonPointer(pointer, key), schema);
+      setOwnEnumerableValue(
+        clone,
+        key,
+        cloneNodeValue(nodeType, value[key], joinJsonPointer(pointer, key), schema),
+      );
     }
     return clone;
   }
@@ -244,7 +257,10 @@ export function createDocument<TTypes extends NodeTypeMap>(
     cache: Object.freeze({
       nodeHashById: createReadonlyMapView(nodeHashById),
       subtreeHashById: createReadonlyMapView(subtreeHashById),
-      pathHashByNodeId: createReadonlyMapView(pathHashByNodeId),
+      pathHashByNodeId: createReadonlyMapView(
+        pathHashByNodeId,
+        (hashes) => createReadonlyMapView(hashes),
+      ),
     }),
   };
   const tree = treeBase as IndexedTree<TTypes>;

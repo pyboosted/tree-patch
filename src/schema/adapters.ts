@@ -10,7 +10,7 @@ import {
   MissingCodecError,
   UnsupportedRuntimeValueError,
 } from "../core/errors.js";
-import { isPlainObject } from "../core/snapshot.js";
+import { isPlainObject, setOwnEnumerableValue } from "../core/snapshot.js";
 
 export const defaultJsonValueAdapter: ValueAdapter<JsonValue> = {
   equals: (left, right) => deepEqual(left, right),
@@ -55,7 +55,7 @@ export function cloneJsonValue<TValue extends JsonValue>(value: TValue): TValue 
 
   const clone: Record<string, JsonValue> = {};
   for (const key of Object.keys(value)) {
-    clone[key] = cloneJsonValue(value[key] as JsonValue);
+    setOwnEnumerableValue(clone, key, cloneJsonValue(value[key] as JsonValue));
   }
   return clone as TValue;
 }
@@ -170,11 +170,15 @@ export function encodePersistedValue<TValue>(
 
 export function isEncodedValue(value: PersistedValue): value is EncodedValue {
   // The {$codec, value} object shape is reserved wire syntax for persisted codec envelopes.
+  if (!isPlainObject(value)) {
+    return false;
+  }
+
+  const keys = Object.keys(value);
   return (
-    typeof value === "object" &&
-    value !== null &&
-    "$codec" in value &&
-    "value" in value &&
+    keys.length === 2 &&
+    keys.includes("$codec") &&
+    keys.includes("value") &&
     typeof value.$codec === "string" &&
     isJsonValue(value.value)
   );

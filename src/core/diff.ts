@@ -243,8 +243,8 @@ function countAttrChanges<TTypes extends NodeTypeMap>(
   const keys = [...new Set([...Object.keys(baseValue), ...Object.keys(targetValue)])].sort();
   return keys.reduce((total, key) => {
     const nextPointer = joinJsonPointer(pointer, key);
-    const hasBase = key in baseValue;
-    const hasTarget = key in targetValue;
+    const hasBase = Object.hasOwn(baseValue, key);
+    const hasTarget = Object.hasOwn(targetValue, key);
 
     if (!hasBase || !hasTarget) {
       return total + 1;
@@ -614,8 +614,8 @@ function collectAttrOpsForNode<TTypes extends NodeTypeMap>(
   const keys = [...new Set([...Object.keys(baseValue), ...Object.keys(targetValue)])].sort();
   for (const key of keys) {
     const nextPointer = joinJsonPointer(pointer, key);
-    const hasBase = key in baseValue;
-    const hasTarget = key in targetValue;
+    const hasBase = Object.hasOwn(baseValue, key);
+    const hasTarget = Object.hasOwn(targetValue, key);
 
     if (!hasTarget) {
       collected.push({

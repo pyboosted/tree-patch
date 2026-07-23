@@ -4,7 +4,7 @@ import type {
   PersistedValue,
 } from "../core/types.js";
 import { MalformedPatchError, MissingCodecError } from "../core/errors.js";
-import { isPlainObject } from "../core/snapshot.js";
+import { isPlainObject, setOwnEnumerableValue } from "../core/snapshot.js";
 import {
   cloneJsonValue,
   encodePersistedValue,
@@ -77,11 +77,15 @@ export function encodeRuntimeValueForPointer<TTypes extends NodeTypeMap>(
     if (isPlainObject(value)) {
       const encoded: Record<string, PersistedValue> = {};
       for (const key of Object.keys(value)) {
-        encoded[key] = encodeRuntimeValueForPointer(
-          schemas,
-          nodeType,
-          joinJsonPointer(pointer, key),
-          value[key],
+        setOwnEnumerableValue(
+          encoded as Record<string, unknown>,
+          key,
+          encodeRuntimeValueForPointer(
+            schemas,
+            nodeType,
+            joinJsonPointer(pointer, key),
+            value[key],
+          ),
         );
       }
 
@@ -105,11 +109,15 @@ export function encodeRuntimeValueForPointer<TTypes extends NodeTypeMap>(
   if (isPlainObject(value)) {
     const encoded: Record<string, PersistedValue> = {};
     for (const key of Object.keys(value)) {
-      encoded[key] = encodeRuntimeValueForPointer(
-        schemas,
-        nodeType,
-        joinJsonPointer(pointer, key),
-        value[key],
+      setOwnEnumerableValue(
+        encoded as Record<string, unknown>,
+        key,
+        encodeRuntimeValueForPointer(
+          schemas,
+          nodeType,
+          joinJsonPointer(pointer, key),
+          value[key],
+        ),
       );
     }
 

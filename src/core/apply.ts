@@ -26,7 +26,12 @@ import type {
 } from "./types.js";
 import { materializeMap, materializeSet } from "./cow.js";
 import { InvalidPointerError, MissingCodecError } from "./errors.js";
-import { createReadonlyMapView, deepFreezePlainData, isPlainObject } from "./snapshot.js";
+import {
+  createReadonlyMapView,
+  deepFreezePlainData,
+  isPlainObject,
+  setOwnEnumerableValue,
+} from "./snapshot.js";
 import { attachTreeState } from "./state.js";
 import { getPathHash, getSubtreeHash, joinJsonPointer } from "./hash.js";
 import {
@@ -216,11 +221,15 @@ function decodeSerializedAttrs<TTypes extends NodeTypeMap>(
   if (isPlainObject(value)) {
     const result: Record<string, unknown> = {};
     for (const key of Object.keys(value)) {
-      result[key] = decodeSerializedAttrs(
-        overlay,
-        nodeType,
-        joinJsonPointer(pointer, key),
-        value[key] as PersistedValue,
+      setOwnEnumerableValue(
+        result,
+        key,
+        decodeSerializedAttrs(
+          overlay,
+          nodeType,
+          joinJsonPointer(pointer, key),
+          value[key] as PersistedValue,
+        ),
       );
     }
     return result;
@@ -274,11 +283,11 @@ function setObjectValue(
   const key = segment;
   const clone: Record<string, unknown> = { ...current };
   if (isLast) {
-    clone[key] = value;
+    setOwnEnumerableValue(clone, key, value);
     return { ok: true, next: clone };
   }
 
-  const existing = clone[key];
+  const existing = Object.hasOwn(clone, key) ? clone[key] : undefined;
   const nextTarget =
     existing === undefined
       ? {}
@@ -293,7 +302,7 @@ function setObjectValue(
     return nested;
   }
 
-  clone[key] = nested.next;
+  setOwnEnumerableValue(clone, key, nested.next);
   return { ok: true, next: clone };
 }
 
@@ -339,7 +348,7 @@ function removeObjectValue(
   }
 
   const key = segment;
-  if (!(key in current)) {
+  if (!Object.hasOwn(current, key)) {
     return { ok: false };
   }
 
@@ -354,7 +363,7 @@ function removeObjectValue(
     return nested;
   }
 
-  clone[key] = nested.next;
+  setOwnEnumerableValue(clone, key, nested.next);
   return { ok: true, next: clone };
 }
 
@@ -1311,7 +1320,10 @@ function buildSnapshotFromOverlay<TTypes extends NodeTypeMap>(
     cache: Object.freeze({
       nodeHashById: createReadonlyMapView(overlay.cache.nodeHashById),
       subtreeHashById: createReadonlyMapView(overlay.cache.subtreeHashById),
-      pathHashByNodeId: createReadonlyMapView(overlay.cache.pathHashByNodeId),
+      pathHashByNodeId: createReadonlyMapView(
+        overlay.cache.pathHashByNodeId,
+        (hashes) => createReadonlyMapView(hashes),
+      ),
     }),
   } as IndexedTree<TTypes>;
 

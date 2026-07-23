@@ -1,5 +1,6 @@
 import type { AttrPath, JsonPointer } from "../core/types.js";
 import { InvalidPointerError } from "../core/errors.js";
+import { isPlainObject } from "../core/snapshot.js";
 
 export interface PointerResolutionSuccess {
   ok: true;
@@ -163,11 +164,11 @@ export function resolvePointer(target: unknown, pointer: JsonPointer): PointerRe
       continue;
     }
 
-    if (current !== null && typeof current === "object") {
+    if (isPlainObject(current)) {
       key = segment;
       path.push(segment);
 
-      if (!(segment in current)) {
+      if (!Object.hasOwn(current, segment)) {
         return {
           ok: false,
           pointer,
