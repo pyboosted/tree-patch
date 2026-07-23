@@ -31,57 +31,69 @@ export function assertSerializedPatchNode(
   location: string,
   seenIds: Set<string>,
 ): asserts node is SerializedPatchNode {
-  if (!node || typeof node !== "object" || Array.isArray(node)) {
-    throw new MalformedPatchError(`${location} must be a serialized patch node object.`, {
-      details: { location },
-    });
-  }
+  const stack: Array<{ node: unknown; location: string }> = [{ node, location }];
+  while (stack.length > 0) {
+    const frame = stack.pop()!;
+    if (!frame.node || typeof frame.node !== "object" || Array.isArray(frame.node)) {
+      throw new MalformedPatchError(
+        `${frame.location} must be a serialized patch node object.`,
+        { details: { location: frame.location } },
+      );
+    }
 
-  const candidate = node as Record<string, unknown>;
-  if (typeof candidate.id !== "string") {
-    throw new MalformedPatchError(`${location}.id must be a string.`, {
-      details: { location },
-    });
-  }
-  if (typeof candidate.type !== "string") {
-    throw new MalformedPatchError(`${location}.type must be a string.`, {
-      details: { location },
-    });
-  }
-  if (!("attrs" in candidate)) {
-    throw new MalformedPatchError(`${location}.attrs is required.`, {
-      details: { location },
-    });
-  }
-  if (!Array.isArray(candidate.children)) {
-    throw new MalformedPatchError(`${location}.children must be an array.`, {
-      details: { location },
-    });
-  }
+    const candidate = frame.node as Record<string, unknown>;
+    if (typeof candidate.id !== "string") {
+      throw new MalformedPatchError(`${frame.location}.id must be a string.`, {
+        details: { location: frame.location },
+      });
+    }
+    if (typeof candidate.type !== "string") {
+      throw new MalformedPatchError(`${frame.location}.type must be a string.`, {
+        details: { location: frame.location },
+      });
+    }
+    if (!Object.hasOwn(candidate, "attrs")) {
+      throw new MalformedPatchError(`${frame.location}.attrs is required.`, {
+        details: { location: frame.location },
+      });
+    }
+    if (!Array.isArray(candidate.children)) {
+      throw new MalformedPatchError(`${frame.location}.children must be an array.`, {
+        details: { location: frame.location },
+      });
+    }
+    if (seenIds.has(candidate.id)) {
+      throw new MalformedPatchError(
+        `Serialized patch subtree at ${frame.location} reuses node id "${candidate.id}".`,
+        {
+          details: { location: frame.location, nodeId: candidate.id },
+        },
+      );
+    }
 
-  if (seenIds.has(candidate.id)) {
-    throw new MalformedPatchError(
-      `Serialized patch subtree at ${location} reuses node id "${candidate.id}".`,
-      {
-        details: { location, nodeId: candidate.id },
-      },
-    );
+    seenIds.add(candidate.id);
+    validatePersistedValueShape(candidate.attrs, `${frame.location}.attrs`);
+    for (let index = candidate.children.length - 1; index >= 0; index -= 1) {
+      stack.push({
+        node: candidate.children[index],
+        location: `child ${index} of serialized node "${candidate.id}"`,
+      });
+    }
   }
-
-  seenIds.add(candidate.id);
-  validatePersistedValueShape(candidate.attrs, `${location}.attrs`);
-
-  candidate.children.forEach((child, index) => {
-    assertSerializedPatchNode(child, `${location}.children[${index}]`, seenIds);
-  });
 }
 
 export function collectSerializedNodeIds(
   node: SerializedPatchNode,
   collected: NodeId[] = [],
 ): NodeId[] {
-  collected.push(node.id);
-  node.children.forEach((child) => collectSerializedNodeIds(child, collected));
+  const stack = [node];
+  while (stack.length > 0) {
+    const current = stack.pop()!;
+    collected.push(current.id);
+    for (let index = current.children.length - 1; index >= 0; index -= 1) {
+      stack.push(current.children[index]!);
+    }
+  }
   return collected;
 }
 

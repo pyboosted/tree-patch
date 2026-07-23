@@ -132,59 +132,113 @@ export function createDocument<TTypes extends NodeTypeMap>(
   const subtreeHashById = new Map<string, string>();
   const pathHashByNodeId = new Map<string, Map<JsonPointer, string>>();
   const activeNodeObjects = new Set<object>();
+  const seenNodeIds = new Set<string>();
 
-  function visit(
-    node: unknown,
-    parentId: string | null,
-    position: number,
-    depth: number,
-    location: string,
-    isRoot: boolean,
-  ): string {
-    assertNodeEnvelope(node, location, isRoot);
-    const runtimeNodeObject = node as object;
-    if (activeNodeObjects.has(runtimeNodeObject)) {
-      throw new MalformedTreeError(`Cycle detected while visiting node at ${location}.`, {
-        details: { location },
-      });
-    }
-
-    activeNodeObjects.add(runtimeNodeObject);
-    try {
-      if (nodes.has(node.id)) {
-        throw new DuplicateIdError(node.id);
+  type VisitFrame =
+    | {
+        kind: "enter";
+        node: unknown;
+        parentId: string | null;
+        position: number;
+        depth: number;
+        location: string;
+        isRoot: boolean;
+        complete: (nodeId: string) => void;
       }
+    | {
+        kind: "exit";
+        node: {
+          id: string;
+          type: string;
+          attrs: unknown;
+          children: readonly unknown[];
+        };
+        runtimeNodeObject: object;
+        parentId: string | null;
+        position: number;
+        depth: number;
+        childIds: string[];
+        complete: (nodeId: string) => void;
+      };
 
-      const childIds = node.children.map((child, index) =>
-        visit(
-          child,
-          node.id,
-          index,
-          depth + 1,
-          `${location}.children[${index}]`,
-          false,
-        ),
-      );
+  let rootId = "";
+  const stack: VisitFrame[] = [{
+    kind: "enter",
+    node: input.root,
+    parentId: null,
+    position: 0,
+    depth: 0,
+    location: "root",
+    isRoot: true,
+    complete: (nodeId) => {
+      rootId = nodeId;
+    },
+  }];
 
+  while (stack.length > 0) {
+    const frame = stack.pop()!;
+    if (frame.kind === "exit") {
       const indexedNode = Object.freeze({
-        id: node.id,
-        type: node.type,
-        attrs: prepareNodeAttrs(node.type, node.attrs, ownership, schema) as IndexedNode<TTypes>["attrs"],
-        childIds: Object.freeze(childIds),
+        id: frame.node.id,
+        type: frame.node.type,
+        attrs: prepareNodeAttrs(
+          frame.node.type,
+          frame.node.attrs,
+          ownership,
+          schema,
+        ) as IndexedNode<TTypes>["attrs"],
+        childIds: Object.freeze(frame.childIds),
       }) as IndexedNode<TTypes>;
 
-      nodes.set(node.id, indexedNode);
-      parentById.set(node.id, parentId);
-      positionById.set(node.id, position);
-      depthById.set(node.id, depth);
+      nodes.set(frame.node.id, indexedNode);
+      parentById.set(frame.node.id, frame.parentId);
+      positionById.set(frame.node.id, frame.position);
+      depthById.set(frame.node.id, frame.depth);
+      activeNodeObjects.delete(frame.runtimeNodeObject);
+      frame.complete(frame.node.id);
+      continue;
+    }
 
-      return node.id;
-    } finally {
-      activeNodeObjects.delete(runtimeNodeObject);
+    assertNodeEnvelope(frame.node, frame.location, frame.isRoot);
+    const runtimeNodeObject = frame.node as object;
+    if (activeNodeObjects.has(runtimeNodeObject)) {
+      throw new MalformedTreeError(
+        `Cycle detected while visiting node at ${frame.location}.`,
+        { details: { location: frame.location } },
+      );
+    }
+    if (seenNodeIds.has(frame.node.id)) {
+      throw new DuplicateIdError(frame.node.id);
+    }
+
+    seenNodeIds.add(frame.node.id);
+    activeNodeObjects.add(runtimeNodeObject);
+    const childIds = new Array<string>(frame.node.children.length);
+    stack.push({
+      kind: "exit",
+      node: frame.node,
+      runtimeNodeObject,
+      parentId: frame.parentId,
+      position: frame.position,
+      depth: frame.depth,
+      childIds,
+      complete: frame.complete,
+    });
+    for (let index = frame.node.children.length - 1; index >= 0; index -= 1) {
+      stack.push({
+        kind: "enter",
+        node: frame.node.children[index],
+        parentId: frame.node.id,
+        position: index,
+        depth: frame.depth + 1,
+        location: `child ${index} of node "${frame.node.id}"`,
+        isRoot: false,
+        complete: (nodeId) => {
+          childIds[index] = nodeId;
+        },
+      });
     }
   }
-
-  const rootId = visit(input.root, null, 0, 0, "root", true);
 
   const treeBase = {
     rootId,

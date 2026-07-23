@@ -154,3 +154,53 @@ test("createDocument rejects cyclic attribute values with a typed runtime error"
     UnsupportedRuntimeValueError,
   );
 });
+
+test("deep structural chains are indexed without consuming the call stack", () => {
+  type DeepTypes = {
+    Deep: { depth: number };
+  };
+  const root = {
+    id: "node-0",
+    type: "Deep" as const,
+    attrs: { depth: 0 },
+    children: [] as unknown[],
+  };
+  let current = root;
+  for (let depth = 1; depth <= 10_000; depth += 1) {
+    const child = {
+      id: `node-${depth}`,
+      type: "Deep" as const,
+      attrs: { depth },
+      children: [] as unknown[],
+    };
+    current.children.push(child);
+    current = child;
+  }
+
+  const tree = createDocument<DeepTypes>({ root } as never);
+  assert.equal(tree.nodes.size, 10_001);
+  assert.equal(tree.index.depthById.get("node-10000"), 10_000);
+  assert.match(tree.revision!, /^tree:/);
+});
+
+test("duplicate ids are detected even when a descendant repeats an ancestor id", () => {
+  assert.throws(
+    () =>
+      createDocument<ContentTypes>({
+        root: {
+          id: "root",
+          type: "Page",
+          attrs: {},
+          children: [
+            {
+              id: "root",
+              type: "Page",
+              attrs: {},
+              children: [],
+            },
+          ],
+        },
+      }),
+    DuplicateIdError,
+  );
+});

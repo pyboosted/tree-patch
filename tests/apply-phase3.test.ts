@@ -545,3 +545,41 @@ test("hidden patch-owned nodes stay hidden after structural moves and are pruned
   assert.ok(prunedSection);
   assert.deepEqual(prunedSection.children.map((child) => child.id), ["section-note"]);
 });
+
+test("deep inserted subtrees validate, normalize, hash, and materialize without recursion overflow", () => {
+  const source = createSourceTree();
+  const insertedRoot = {
+    id: "deep-0",
+    type: "Section",
+    attrs: { label: "0" },
+    children: [] as unknown[],
+  };
+  let current = insertedRoot;
+  for (let depth = 1; depth <= 5_000; depth += 1) {
+    const child = {
+      id: `deep-${depth}`,
+      type: "Section",
+      attrs: { label: String(depth) },
+      children: [] as unknown[],
+    };
+    current.children.push(child);
+    current = child;
+  }
+
+  const result = applyPatch(source, {
+    format: "tree-patch/v1",
+    patchId: "deep-insert",
+    ops: [
+      {
+        kind: "insertNode",
+        opId: "insert-deep",
+        parentId: "root",
+        node: insertedRoot as never,
+      },
+    ],
+  });
+
+  assert.equal(result.status, "applied");
+  assert.equal(result.tree.nodes.has("deep-5000"), true);
+  assert.equal(result.tree.index.depthById.get("deep-5000"), 5_001);
+});

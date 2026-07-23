@@ -909,31 +909,50 @@ function normalizeSerializedSubtree<TTypes extends NodeTypeMap>(
   nodes: IndexedNode<TTypes>[];
   index: NormalizedSubtreeIndexEntry[];
 } {
-  const attrs = decodeSerializedAttrs(
-    overlay,
-    node.type,
-    "",
-    node.attrs,
-  ) as IndexedNode<TTypes>["attrs"];
+  const nodes: IndexedNode<TTypes>[] = [];
+  const index: NormalizedSubtreeIndexEntry[] = [];
+  const stack: Array<{
+    node: SerializedPatchNode;
+    parentId: NodeId | null;
+    depth: number;
+    position: number;
+  }> = [{ node, parentId, depth, position }];
 
-  const normalizedChildren = node.children.map((child, childIndex) =>
-    normalizeSerializedSubtree(overlay, child, node.id, depth + 1, childIndex),
-  );
+  while (stack.length > 0) {
+    const current = stack.pop()!;
+    nodes.push({
+      id: current.node.id,
+      type: current.node.type as IndexedNode<TTypes>["type"],
+      attrs: decodeSerializedAttrs(
+        overlay,
+        current.node.type,
+        "",
+        current.node.attrs,
+      ) as IndexedNode<TTypes>["attrs"],
+      childIds: current.node.children.map((child) => child.id),
+    });
+    index.push({
+      nodeId: current.node.id,
+      parentId: current.parentId,
+      depth: current.depth,
+      position: current.position,
+    });
 
-  const indexedNode = {
-    id: node.id,
-    type: node.type as IndexedNode<TTypes>["type"],
-    attrs,
-    childIds: normalizedChildren.map((child) => child.nodes[0]!.id),
-  } satisfies IndexedNode<TTypes>;
+    for (
+      let childIndex = current.node.children.length - 1;
+      childIndex >= 0;
+      childIndex -= 1
+    ) {
+      stack.push({
+        node: current.node.children[childIndex]!,
+        parentId: current.node.id,
+        depth: current.depth + 1,
+        position: childIndex,
+      });
+    }
+  }
 
-  return {
-    nodes: [indexedNode, ...normalizedChildren.flatMap((child) => child.nodes)],
-    index: [
-      { nodeId: node.id, parentId, depth, position },
-      ...normalizedChildren.flatMap((child) => child.index),
-    ],
-  };
+  return { nodes, index };
 }
 
 function setParentChildIds<TTypes extends NodeTypeMap>(
@@ -1462,47 +1481,101 @@ function buildMaterializedTree<TTypes extends NodeTypeMap>(
   includeHidden: boolean,
   ancestorHidden: boolean,
 ): MaterializedNode<TTypes> | null {
-  const node = overlay.nodes.get(nodeId);
-  if (!node) {
-    return null;
+  let root: MaterializedNode<TTypes> | null = null;
+  type Frame =
+    | {
+        kind: "enter";
+        nodeId: NodeId;
+        ancestorHidden: boolean;
+        assign: (node: MaterializedNode<TTypes> | null) => void;
+      }
+    | {
+        kind: "exit";
+        node: IndexedNode<TTypes>;
+        hidden: boolean;
+        explicitlyHidden: boolean;
+        children: Array<MaterializedNode<TTypes> | null>;
+        assign: (node: MaterializedNode<TTypes>) => void;
+      };
+  const stack: Frame[] = [{
+    kind: "enter",
+    nodeId,
+    ancestorHidden,
+    assign: (node) => {
+      root = node;
+    },
+  }];
+
+  while (stack.length > 0) {
+    const frame = stack.pop()!;
+    if (frame.kind === "exit") {
+      const state: MaterializedNode<TTypes>["state"] = {};
+      if (frame.hidden) {
+        state.hidden = true;
+      }
+      if (overlay.patchOwned.has(frame.node.id)) {
+        state.patchOwned = true;
+      }
+      if (frame.explicitlyHidden) {
+        state.explicitlyHidden = true;
+      }
+
+      const materialized: MaterializedNode<TTypes> = {
+        id: frame.node.id,
+        type: frame.node.type,
+        attrs: exposeRuntimeAttrs(
+          overlay.schema,
+          overlay.ownership,
+          String(frame.node.type),
+          frame.node.attrs,
+        ) as MaterializedNode<TTypes>["attrs"],
+        children: frame.children.filter(
+          (child): child is MaterializedNode<TTypes> => child !== null,
+        ),
+      };
+      if (Object.keys(state).length > 0) {
+        materialized.state = state;
+      }
+      frame.assign(materialized);
+      continue;
+    }
+
+    const node = overlay.nodes.get(frame.nodeId);
+    if (!node) {
+      frame.assign(null);
+      continue;
+    }
+    const explicitlyHidden = overlay.explicitHidden.has(frame.nodeId);
+    const hidden = frame.ancestorHidden || explicitlyHidden;
+    if (hidden && !includeHidden) {
+      frame.assign(null);
+      continue;
+    }
+
+    const children = new Array<MaterializedNode<TTypes> | null>(
+      node.childIds.length,
+    ).fill(null);
+    stack.push({
+      kind: "exit",
+      node,
+      hidden,
+      explicitlyHidden,
+      children,
+      assign: frame.assign as (node: MaterializedNode<TTypes>) => void,
+    });
+    for (let index = node.childIds.length - 1; index >= 0; index -= 1) {
+      stack.push({
+        kind: "enter",
+        nodeId: node.childIds[index]!,
+        ancestorHidden: hidden,
+        assign: (child) => {
+          children[index] = child;
+        },
+      });
+    }
   }
 
-  const explicitlyHidden = overlay.explicitHidden.has(nodeId);
-  const hidden = ancestorHidden || explicitlyHidden;
-  if (hidden && !includeHidden) {
-    return null;
-  }
-
-  const children = node.childIds
-    .map((childId) => buildMaterializedTree(overlay, childId, includeHidden, hidden))
-    .filter((child): child is MaterializedNode<TTypes> => child !== null);
-
-  const state: MaterializedNode<TTypes>["state"] = {};
-  if (hidden) {
-    state.hidden = true;
-  }
-  if (overlay.patchOwned.has(nodeId)) {
-    state.patchOwned = true;
-  }
-  if (explicitlyHidden) {
-    state.explicitlyHidden = true;
-  }
-
-  const materialized: MaterializedNode<TTypes> = {
-    id: node.id,
-    type: node.type,
-    attrs: exposeRuntimeAttrs(
-      overlay.schema,
-      overlay.ownership,
-      String(node.type),
-      node.attrs,
-    ) as MaterializedNode<TTypes>["attrs"],
-    children,
-  };
-  if (Object.keys(state).length > 0) {
-    materialized.state = state;
-  }
-  return materialized;
+  return root;
 }
 
 export function executePatchInternal<TTypes extends NodeTypeMap>(

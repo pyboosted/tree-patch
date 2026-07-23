@@ -196,15 +196,18 @@ export function collectSubtreeNodeIds<TTypes extends NodeTypeMap>(
   nodeId: NodeId,
   collected: NodeId[] = [],
 ): NodeId[] {
-  const node = overlay.nodes.get(nodeId);
-  if (!node) {
-    return collected;
+  const stack = [nodeId];
+  while (stack.length > 0) {
+    const currentId = stack.pop()!;
+    const node = overlay.nodes.get(currentId);
+    if (!node) {
+      continue;
+    }
+    collected.push(currentId);
+    for (let index = node.childIds.length - 1; index >= 0; index -= 1) {
+      stack.push(node.childIds[index]!);
+    }
   }
-
-  collected.push(nodeId);
-  node.childIds.forEach((childId) => {
-    collectSubtreeNodeIds(overlay, childId, collected);
-  });
   return collected;
 }
 
@@ -213,15 +216,21 @@ export function reindexSubtreeDepths<TTypes extends NodeTypeMap>(
   nodeId: NodeId,
   depth: number,
 ): void {
-  overlay.index.depthById.set(nodeId, depth);
-  const node = overlay.nodes.get(nodeId);
-  if (!node) {
-    return;
+  const stack: Array<{ nodeId: NodeId; depth: number }> = [{ nodeId, depth }];
+  while (stack.length > 0) {
+    const current = stack.pop()!;
+    overlay.index.depthById.set(current.nodeId, current.depth);
+    const node = overlay.nodes.get(current.nodeId);
+    if (!node) {
+      continue;
+    }
+    for (let index = node.childIds.length - 1; index >= 0; index -= 1) {
+      stack.push({
+        nodeId: node.childIds[index]!,
+        depth: current.depth + 1,
+      });
+    }
   }
-
-  node.childIds.forEach((childId) => {
-    reindexSubtreeDepths(overlay, childId, depth + 1);
-  });
 }
 
 function clearNodeState<TTypes extends NodeTypeMap>(
