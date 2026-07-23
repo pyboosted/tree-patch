@@ -113,6 +113,18 @@ rows.push(measure("diff: 100k siblings, one attr", () => {
 }));
 rows.push(measure("apply: sparse attr in 100k tree", () =>
   applyPatch(wideBase, widePatch).status));
+rows.push(measure("apply: leaf attr in 100k tree", () =>
+  applyPatch(wideBase, {
+    format: "tree-patch/v1",
+    patchId: "wide-leaf",
+    ops: [{
+      kind: "setAttr",
+      opId: "set-leaf-value",
+      nodeId: "leaf-50000",
+      path: "/value",
+      value: 1,
+    }],
+  }).status));
 rows.push(measure("materialize: sparse attr in 100k tree", () =>
   applyPatch(wideBase, widePatch).materialized.id));
 const reorderPatch = diffTrees(reorderBase, reorderTarget);

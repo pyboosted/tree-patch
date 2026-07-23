@@ -39,6 +39,9 @@ export function createOverlayState<TTypes extends NodeTypeMap>(
       nodeHashById: createCopyOnWriteMap(sourceState.cache.nodeHashById),
       subtreeHashById: createCopyOnWriteMap(sourceState.cache.subtreeHashById),
       pathHashByNodeId: createCopyOnWriteMap(sourceState.cache.pathHashByNodeId),
+      childHashByParentId: createCopyOnWriteMap(
+        sourceState.cache.childHashByParentId,
+      ),
     } as MutableTreeState<TTypes>["cache"],
     explicitHidden: createCopyOnWriteSet(sourceState.explicitHidden),
     patchOwned: createCopyOnWriteSet(sourceState.patchOwned),
@@ -252,6 +255,7 @@ function clearNodeState<TTypes extends NodeTypeMap>(
   overlay.cache.nodeHashById.delete(nodeId);
   overlay.cache.subtreeHashById.delete(nodeId);
   overlay.cache.pathHashByNodeId.delete(nodeId);
+  overlay.cache.childHashByParentId.delete(nodeId);
   overlay.explicitHidden.delete(nodeId);
   overlay.patchOwned.delete(nodeId);
   overlay.dirtyNodeIds.delete(nodeId);

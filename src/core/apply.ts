@@ -1762,7 +1762,9 @@ function freezeNodeForSnapshot<TTypes extends NodeTypeMap>(
   return Object.freeze({
     ...node,
     attrs: deepFreezePlainData(node.attrs),
-    childIds: Object.freeze([...node.childIds]),
+    childIds: Object.isFrozen(node.childIds)
+      ? node.childIds
+      : Object.freeze(node.childIds),
   }) as IndexedNode<TTypes>;
 }
 
@@ -1785,6 +1787,9 @@ function buildSnapshotFromOverlay<TTypes extends NodeTypeMap>(
   overlay.cache.nodeHashById = finalizeMap(overlay.cache.nodeHashById);
   overlay.cache.subtreeHashById = finalizeMap(overlay.cache.subtreeHashById);
   overlay.cache.pathHashByNodeId = finalizeMap(overlay.cache.pathHashByNodeId);
+  overlay.cache.childHashByParentId = finalizeMap(
+    overlay.cache.childHashByParentId,
+  );
   overlay.explicitHidden = finalizeSet(overlay.explicitHidden);
   overlay.patchOwned = finalizeSet(overlay.patchOwned);
 

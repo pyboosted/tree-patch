@@ -9,9 +9,10 @@ import {
   getSubtreeHash,
   getTreeRevisionHash,
 } from "../src/core/hash.js";
+import { getTreeState } from "../src/core/state.js";
 
 type HashTypes = {
-  Page: {};
+  Page: { version?: number };
   Hero: {
     title: string;
     image: {
@@ -138,6 +139,48 @@ test("atomic schema paths are opaque but still change hashes when inner data cha
   assert.notEqual(getPathHash(treeA, "widget", "/blob"), getPathHash(treeB, "widget", "/blob"));
   assert.notEqual(getNodeHash(treeA, "widget"), getNodeHash(treeB, "widget"));
   assert.notEqual(getSubtreeHash(treeA, "root"), getSubtreeHash(treeB, "root"));
+});
+
+test("ordered child aggregates are shared for parent attrs and forked for child edits", () => {
+  const source = createDocument<HashTypes>(createHashSource());
+  const sourceState = getTreeState(source);
+  const sourceAggregate = sourceState.cache.childHashByParentId.get("root")!;
+  const sourceDigest = sourceAggregate.digest();
+
+  const rootEdit = applyPatch(source, {
+    format: "tree-patch/v1",
+    patchId: "root-attr",
+    ops: [{
+      kind: "setAttr",
+      opId: "set-version",
+      nodeId: "root",
+      path: "/version",
+      value: 2,
+    }],
+  });
+  assert.equal(rootEdit.status, "applied");
+  assert.strictEqual(
+    getTreeState(rootEdit.tree).cache.childHashByParentId.get("root"),
+    sourceAggregate,
+  );
+
+  const childEdit = applyPatch(source, {
+    format: "tree-patch/v1",
+    patchId: "child-attr",
+    ops: [{
+      kind: "setAttr",
+      opId: "set-title",
+      nodeId: "hero",
+      path: "/title",
+      value: "Winter Sale",
+    }],
+  });
+  assert.equal(childEdit.status, "applied");
+  const childEditAggregate =
+    getTreeState(childEdit.tree).cache.childHashByParentId.get("root")!;
+  assert.notStrictEqual(childEditAggregate, sourceAggregate);
+  assert.notEqual(childEditAggregate.digest(), sourceDigest);
+  assert.equal(sourceAggregate.digest(), sourceDigest);
 });
 
 test("portable hashing no longer depends on node crypto runtime imports", () => {

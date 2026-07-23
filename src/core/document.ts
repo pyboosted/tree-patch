@@ -29,6 +29,7 @@ import {
   cloneJsonValue,
   isJsonValue,
 } from "../schema/adapters.js";
+import type { ChildHashAggregate } from "./child-hash.js";
 
 const NODE_ENVELOPE_KEYS = new Set(["id", "type", "attrs", "children"]);
 
@@ -131,6 +132,7 @@ export function createDocument<TTypes extends NodeTypeMap>(
   const nodeHashById = new Map<string, string>();
   const subtreeHashById = new Map<string, string>();
   const pathHashByNodeId = new Map<string, Map<JsonPointer, string>>();
+  const childHashByParentId = new Map<string, ChildHashAggregate>();
   const activeNodeObjects = new Set<object>();
   const seenNodeIds = new Set<string>();
 
@@ -281,6 +283,7 @@ export function createDocument<TTypes extends NodeTypeMap>(
       nodeHashById,
       subtreeHashById,
       pathHashByNodeId,
+      childHashByParentId,
     },
     explicitHidden: new Set(),
     patchOwned: new Set(),

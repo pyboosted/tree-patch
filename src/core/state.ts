@@ -7,11 +7,13 @@ import type {
 } from "./types.js";
 import type { MutableMapLike, MutableSetLike } from "./cow.js";
 import type { CompiledTreeSchema } from "../schema/schema.js";
+import type { ChildHashAggregate } from "./child-hash.js";
 
 export interface MutableTreeCache {
   nodeHashById: MutableMapLike<NodeId, string>;
   subtreeHashById: MutableMapLike<NodeId, string>;
   pathHashByNodeId: MutableMapLike<NodeId, MutableMapLike<JsonPointer, string>>;
+  childHashByParentId: MutableMapLike<NodeId, ChildHashAggregate>;
 }
 
 export interface MutableTreeState<TTypes extends NodeTypeMap> {

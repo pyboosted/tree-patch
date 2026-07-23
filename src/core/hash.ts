@@ -2,6 +2,7 @@ import type {
   IndexedTree,
   JsonPointer,
   JsonValue,
+  NodeId,
   NodeTypeMap,
 } from "./types.js";
 import { ensureMutableMapValue } from "./cow.js";
@@ -16,6 +17,7 @@ import {
   isAtomicPointer,
 } from "../schema/schema.js";
 import { resolvePointer } from "../schema/pointers.js";
+import { ChildHashAggregate } from "./child-hash.js";
 
 export const HASH_VERSION = "h2";
 
@@ -217,12 +219,91 @@ function getNodeOrThrow<TTypes extends NodeTypeMap>(
   tree: IndexedTree<TTypes>,
   nodeId: string,
 ) {
-  const node = tree.nodes.get(nodeId);
+  const node = getTreeState(tree).nodes.get(nodeId);
   if (!node) {
     throw new InvalidPointerError(nodeId, `Node "${nodeId}" does not exist in the document.`);
   }
 
   return node;
+}
+
+function getChildHashAggregate<TTypes extends NodeTypeMap>(
+  tree: IndexedTree<TTypes>,
+  nodeId: NodeId,
+  childIds: readonly NodeId[],
+): ChildHashAggregate | undefined {
+  if (childIds.length === 0) {
+    return undefined;
+  }
+
+  const state = getTreeState(tree);
+  const cached = state.cache.childHashByParentId.get(nodeId);
+  if (cached?.matches(childIds)) {
+    return cached;
+  }
+
+  const childHashes = childIds.map((childId) => {
+    const childHash = state.cache.subtreeHashById.get(childId);
+    if (!childHash) {
+      throw new InvalidPointerError(
+        childId,
+        `Node "${childId}" cannot be aggregated before its subtree is hashed.`,
+      );
+    }
+    return childHash;
+  });
+  const aggregate = ChildHashAggregate.build(childIds, childHashes);
+  state.cache.childHashByParentId.set(nodeId, aggregate);
+  return aggregate;
+}
+
+function updateCachedParentAggregate<TTypes extends NodeTypeMap>(
+  tree: IndexedTree<TTypes>,
+  nodeId: NodeId,
+  subtreeHash: string,
+): void {
+  const state = getTreeState(tree);
+  const parentId = state.index.parentById.get(nodeId);
+  if (parentId == null) {
+    return;
+  }
+
+  const parent = state.nodes.get(parentId);
+  const cached = state.cache.childHashByParentId.get(parentId);
+  if (!parent || !cached?.matches(parent.childIds)) {
+    return;
+  }
+
+  const position = state.index.positionById.get(nodeId);
+  if (
+    position === undefined ||
+    parent.childIds[position] !== nodeId ||
+    cached.get(position) === subtreeHash
+  ) {
+    return;
+  }
+
+  const aggregate = ensureMutableMapValue(
+    state.cache.childHashByParentId,
+    parentId,
+    (current) =>
+      current?.matches(parent.childIds)
+        ? current.fork()
+        : ChildHashAggregate.build(
+            parent.childIds,
+            parent.childIds.map((childId) => {
+              const childHash = state.cache.subtreeHashById.get(childId);
+              if (!childHash) {
+                throw new InvalidPointerError(
+                  childId,
+                  `Node "${childId}" cannot be aggregated before its subtree is hashed.`,
+                );
+              }
+              return childHash;
+            }),
+          ),
+  );
+  aggregate.update(position, subtreeHash);
 }
 
 function hashRuntimeValueAtPointer<TTypes extends NodeTypeMap>(
@@ -290,23 +371,19 @@ export function getSubtreeHash<TTypes extends NodeTypeMap>(
 
     const node = getNodeOrThrow(tree, frame.nodeId);
     if (frame.exit) {
-      state.cache.subtreeHashById.set(
+      const childAggregate = getChildHashAggregate(
+        tree,
         frame.nodeId,
-        versionHash(hashStableParts((function* () {
-          yield "subtree";
-          yield getNodeHash(tree, frame.nodeId);
-          for (const childId of node.childIds) {
-            const childHash = state.cache.subtreeHashById.get(childId);
-            if (!childHash) {
-              throw new InvalidPointerError(
-                childId,
-                `Node "${childId}" cannot be hashed before its descendants.`,
-              );
-            }
-            yield childHash;
-          }
-        })())),
+        node.childIds,
       );
+      const subtreeHash = versionHash(hashStableParts([
+        "subtree",
+        getNodeHash(tree, frame.nodeId),
+        String(node.childIds.length),
+        childAggregate?.digest() ?? "",
+      ]));
+      state.cache.subtreeHashById.set(frame.nodeId, subtreeHash);
+      updateCachedParentAggregate(tree, frame.nodeId, subtreeHash);
       continue;
     }
 
