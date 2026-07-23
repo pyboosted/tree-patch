@@ -415,12 +415,75 @@ function compareValues<TTypes extends NodeTypeMap>(
   actual: unknown,
   expected: unknown,
 ): boolean {
-  const adapter = getAdapterForPointer(overlay, nodeType, pointer);
-  if (adapter?.equals) {
-    return adapter.equals(actual as never, expected as never);
+  const stack: Array<{
+    pointer: JsonPointer;
+    actual: unknown;
+    expected: unknown;
+  }> = [{ pointer, actual, expected }];
+
+  while (stack.length > 0) {
+    const current = stack.pop()!;
+    const adapter = getAdapterForPointer(
+      overlay,
+      nodeType,
+      current.pointer,
+    );
+    if (adapter) {
+      if (!adapter.equals(current.actual as never, current.expected as never)) {
+        return false;
+      }
+      continue;
+    }
+    if (Object.is(current.actual, current.expected)) {
+      continue;
+    }
+    if (Array.isArray(current.actual) || Array.isArray(current.expected)) {
+      if (
+        !Array.isArray(current.actual) ||
+        !Array.isArray(current.expected) ||
+        current.actual.length !== current.expected.length
+      ) {
+        return false;
+      }
+      for (let index = 0; index < current.actual.length; index += 1) {
+        stack.push({
+          pointer: joinJsonPointer(current.pointer, index),
+          actual: current.actual[index],
+          expected: current.expected[index],
+        });
+      }
+      continue;
+    }
+    if (isPlainObject(current.actual) || isPlainObject(current.expected)) {
+      if (
+        !isPlainObject(current.actual) ||
+        !isPlainObject(current.expected)
+      ) {
+        return false;
+      }
+      const actualKeys = Object.keys(current.actual).sort();
+      const expectedKeys = Object.keys(current.expected).sort();
+      if (
+        actualKeys.length !== expectedKeys.length ||
+        actualKeys.some((key, index) => key !== expectedKeys[index])
+      ) {
+        return false;
+      }
+      for (const key of actualKeys) {
+        stack.push({
+          pointer: joinJsonPointer(current.pointer, key),
+          actual: current.actual[key],
+          expected: current.expected[key],
+        });
+      }
+      continue;
+    }
+    if (!deepEqual(current.actual, current.expected)) {
+      return false;
+    }
   }
 
-  return deepEqual(actual, expected);
+  return true;
 }
 
 function cloneOwnedRuntimeValue<TTypes extends NodeTypeMap>(
@@ -440,11 +503,21 @@ function decodeSerializedAttrs<TTypes extends NodeTypeMap>(
   value: PersistedValue,
 ): unknown {
   let root: unknown;
-  const stack: Array<{
-    value: PersistedValue;
-    pointer: JsonPointer;
-    assign: (value: unknown) => void;
-  }> = [{
+  type Frame =
+    | {
+        kind: "value";
+        value: PersistedValue;
+        pointer: JsonPointer;
+        assign: (value: unknown) => void;
+      }
+    | {
+        kind: "clone";
+        value: unknown;
+        pointer: JsonPointer;
+        assign: (value: unknown) => void;
+      };
+  const stack: Frame[] = [{
+    kind: "value",
     value,
     pointer,
     assign: (decoded) => {
@@ -453,6 +526,15 @@ function decodeSerializedAttrs<TTypes extends NodeTypeMap>(
   }];
   while (stack.length > 0) {
     const frame = stack.pop()!;
+    if (frame.kind === "clone") {
+      frame.assign(cloneOwnedRuntimeValue(
+        overlay,
+        nodeType,
+        frame.pointer,
+        frame.value,
+      ));
+      continue;
+    }
     if (isEncodedValue(frame.value)) {
       frame.assign(cloneOwnedRuntimeValue(
         overlay,
@@ -467,11 +549,26 @@ function decodeSerializedAttrs<TTypes extends NodeTypeMap>(
       ));
       continue;
     }
+    const adapter = getAdapterForPointer(
+      overlay,
+      nodeType,
+      frame.pointer,
+    );
     if (Array.isArray(frame.value)) {
       const decoded = new Array<unknown>(frame.value.length);
-      frame.assign(decoded);
+      if (adapter) {
+        stack.push({
+          kind: "clone",
+          value: decoded,
+          pointer: frame.pointer,
+          assign: frame.assign,
+        });
+      } else {
+        frame.assign(decoded);
+      }
       for (let index = frame.value.length - 1; index >= 0; index -= 1) {
         stack.push({
+          kind: "value",
           value: frame.value[index] as PersistedValue,
           pointer: joinJsonPointer(frame.pointer, index),
           assign: (child) => {
@@ -483,11 +580,21 @@ function decodeSerializedAttrs<TTypes extends NodeTypeMap>(
     }
     if (isPlainObject(frame.value)) {
       const decoded: Record<string, unknown> = {};
-      frame.assign(decoded);
+      if (adapter) {
+        stack.push({
+          kind: "clone",
+          value: decoded,
+          pointer: frame.pointer,
+          assign: frame.assign,
+        });
+      } else {
+        frame.assign(decoded);
+      }
       const keys = Object.keys(frame.value);
       for (let index = keys.length - 1; index >= 0; index -= 1) {
         const key = keys[index]!;
         stack.push({
+          kind: "value",
           value: frame.value[key] as PersistedValue,
           pointer: joinJsonPointer(frame.pointer, key),
           assign: (child) => {
@@ -497,7 +604,14 @@ function decodeSerializedAttrs<TTypes extends NodeTypeMap>(
       }
       continue;
     }
-    frame.assign(frame.value);
+    frame.assign(adapter
+      ? cloneOwnedRuntimeValue(
+          overlay,
+          nodeType,
+          frame.pointer,
+          frame.value,
+        )
+      : frame.value);
   }
 
   return root;
@@ -546,6 +660,7 @@ function setObjectValue(
   segments: readonly string[],
   value: unknown,
   ownedContainers: WeakSet<object>,
+  pathKinds?: readonly ("property" | "index")[],
 ): { ok: true; next: unknown } | { ok: false } {
   if (segments.length === 0) {
     return { ok: true, next: value };
@@ -553,20 +668,36 @@ function setObjectValue(
 
   // Validate the complete path before mutating an already-owned draft.
   let cursor = current;
+  let virtualContainer = false;
   for (let index = 0; index < segments.length; index += 1) {
     const segment = segments[index]!;
     const isLast = index === segments.length - 1;
+    const pathKind = pathKinds?.[index];
+    if (virtualContainer) {
+      if (pathKind === "index" && segment !== "0") {
+        return { ok: false };
+      }
+      continue;
+    }
     if (Array.isArray(cursor)) {
-      const arrayIndex = readArrayIndex(segment, cursor);
+      if (pathKind === "property") {
+        return { ok: false };
+      }
+      const arrayIndex = readArrayIndex(segment, cursor) ??
+        (segment === "0" && cursor.length === 0 ? 0 : undefined);
       if (arrayIndex === undefined) {
         return { ok: false };
       }
       if (!isLast) {
         cursor = cursor[arrayIndex];
+        virtualContainer = cursor === undefined;
       }
       continue;
     }
     if (!isPlainObject(cursor)) {
+      return { ok: false };
+    }
+    if (pathKind === "index") {
       return { ok: false };
     }
     if (!isLast) {
@@ -580,7 +711,11 @@ function setObjectValue(
       ) {
         return { ok: false };
       }
-      cursor = existing ?? {};
+      if (existing === undefined) {
+        virtualContainer = true;
+      } else {
+        cursor = existing;
+      }
     }
   }
 
@@ -588,20 +723,31 @@ function setObjectValue(
     return { ok: false };
   }
   const root = ensureOwnedAttrContainer(current, ownedContainers);
+  const createContainer = (
+    kind: "property" | "index" | undefined,
+  ): unknown[] | Record<string, unknown> => {
+    const created: unknown[] | Record<string, unknown> =
+      kind === "index" ? [] : {};
+    ownedContainers.add(created);
+    return created;
+  };
   let draft = root;
   for (let index = 0; index < segments.length; index += 1) {
     const segment = segments[index]!;
     const isLast = index === segments.length - 1;
     if (Array.isArray(draft)) {
-      const arrayIndex = readArrayIndex(segment, draft)!;
+      const arrayIndex = readArrayIndex(segment, draft) ??
+        (segment === "0" && draft.length === 0 ? 0 : undefined);
+      if (arrayIndex === undefined) {
+        return { ok: false };
+      }
       if (isLast) {
         draft[arrayIndex] = value;
         break;
       }
       const existing = draft[arrayIndex];
       if (existing === undefined) {
-        const created: Record<string, unknown> = {};
-        ownedContainers.add(created);
+        const created = createContainer(pathKinds?.[index + 1]);
         draft[arrayIndex] = created;
         draft = created;
         continue;
@@ -623,8 +769,7 @@ function setObjectValue(
       ? draft[segment]
       : undefined;
     if (existing === undefined) {
-      const created: Record<string, unknown> = {};
-      ownedContainers.add(created);
+      const created = createContainer(pathKinds?.[index + 1]);
       setOwnEnumerableValue(draft, segment, created);
       draft = created;
       continue;
@@ -804,7 +949,12 @@ function evaluateGuard<TTypes extends NodeTypeMap>(
         };
       }
 
-      if (resolution.reason !== "Missing") {
+      const insertsFirstArrayItem =
+        resolution.reason === "InvalidArrayIndex" &&
+        Array.isArray(resolution.parent) &&
+        resolution.parent.length === 0 &&
+        resolution.key === 0;
+      if (resolution.reason !== "Missing" && !insertsFirstArrayItem) {
         return {
           ok: false,
           conflict: toConflict(
@@ -845,7 +995,7 @@ function evaluateGuard<TTypes extends NodeTypeMap>(
         };
       }
 
-      const expected = decodePersistedForPointer(
+      const expected = decodeSerializedAttrs(
         overlay,
         String(node.type),
         guard.path,
@@ -1134,17 +1284,18 @@ function applySetAttr<TTypes extends NodeTypeMap>(
     return guards;
   }
 
-  const decodedValue = cloneOwnedRuntimeValue(
+  const decodedValue = decodeSerializedAttrs(
     context.overlay,
     String(node.type),
     op.path,
-    decodePersistedForPointer(context.overlay, String(node.type), op.path, op.value),
+    op.value,
   );
   const result = setObjectValue(
     node.attrs,
     parseJsonPointer(op.path),
     decodedValue,
     context.ownedAttrContainers,
+    op.pathKinds,
   );
   if (!result.ok) {
     return {
@@ -1920,11 +2071,8 @@ function buildSnapshotFromOverlay<TTypes extends NodeTypeMap>(
         (hashes) => createReadonlyMapView(hashes),
       ),
     }),
+    ...(overlay.metadata !== undefined ? { metadata: overlay.metadata } : {}),
   } as IndexedTree<TTypes>;
-
-  if (overlay.metadata !== undefined) {
-    tree.metadata = overlay.metadata;
-  }
 
   attachTreeState(tree, overlay);
   let cachedRevision: string | undefined;
@@ -1984,16 +2132,11 @@ function buildMaterializedTree<TTypes extends NodeTypeMap>(
   while (stack.length > 0) {
     const frame = stack.pop()!;
     if (frame.kind === "exit") {
-      const materializedState: MaterializedNode<TTypes>["state"] = {};
-      if (frame.hidden) {
-        materializedState.hidden = true;
-      }
-      if (state.patchOwned.has(frame.node.id)) {
-        materializedState.patchOwned = true;
-      }
-      if (frame.explicitlyHidden) {
-        materializedState.explicitlyHidden = true;
-      }
+      const materializedState: MaterializedNode<TTypes>["state"] = {
+        ...(frame.hidden ? { hidden: true } : {}),
+        ...(state.patchOwned.has(frame.node.id) ? { patchOwned: true } : {}),
+        ...(frame.explicitlyHidden ? { explicitlyHidden: true } : {}),
+      };
 
       const materialized: MaterializedNode<TTypes> = {
         id: frame.node.id,
@@ -2007,10 +2150,10 @@ function buildMaterializedTree<TTypes extends NodeTypeMap>(
         children: frame.children.filter(
           (child): child is MaterializedNode<TTypes> => child !== null,
         ),
+        ...(Object.keys(materializedState).length > 0
+          ? { state: materializedState }
+          : {}),
       };
-      if (Object.keys(materializedState).length > 0) {
-        materialized.state = materializedState;
-      }
       frame.assign(materialized);
       continue;
     }

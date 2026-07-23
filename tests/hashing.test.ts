@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 
-import { applyPatch, createDocument } from "../src/index.js";
+import { applyPatch, createDocument, diffTrees } from "../src/index.js";
 import {
   getNodeHash,
   getPathHash,
@@ -74,10 +74,29 @@ test("equal documents produce identical node, subtree, path hashes, and derived 
   assert.equal(getPathHash(treeA, "hero", "/image/url"), getPathHash(treeB, "hero", "/image/url"));
   assert.equal(treeA.revision, getTreeRevisionHash(treeA));
   assert.equal(treeB.revision, getTreeRevisionHash(treeB));
-  assert.match(treeA.revision!, /^tree:h2:/);
-  assert.match(getNodeHash(treeA, "hero"), /^h2:/);
-  assert.match(getSubtreeHash(treeA, "root"), /^h2:/);
-  assert.match(getPathHash(treeA, "hero", "/image/url"), /^h2:/);
+  assert.match(treeA.revision!, /^tree:h3:/);
+  assert.match(getNodeHash(treeA, "hero"), /^h3:/);
+  assert.match(getSubtreeHash(treeA, "root"), /^h3:/);
+  assert.match(getPathHash(treeA, "hero", "/image/url"), /^h3:/);
+
+  const legacyGuard = applyPatch(treeA, {
+    format: "tree-patch/v1",
+    patchId: "legacy-hash-guard",
+    ops: [{
+      kind: "setAttr",
+      opId: "set-title",
+      nodeId: "hero",
+      path: "/title",
+      value: "Winter Sale",
+      guards: [{
+        kind: "attrHash",
+        nodeId: "hero",
+        path: "/title",
+        hash: "h2:00000000000000000000000000000000",
+      }],
+    }],
+  });
+  assert.equal(legacyGuard.status, "conflict");
 });
 
 test("derived revisions include visibility and metadata while semantic no-ops preserve external revisions", () => {
@@ -121,7 +140,7 @@ test("derived revisions include visibility and metadata while semantic no-ops pr
   });
   assert.equal(hidden.status, "applied");
   assert.notEqual(hidden.tree.revision, external.revision);
-  assert.match(hidden.tree.revision!, /^tree:h2:/);
+  assert.match(hidden.tree.revision!, /^tree:h3:/);
 
   const metadataA = createDocument<HashTypes>({
     ...createHashSource(),
@@ -132,6 +151,46 @@ test("derived revisions include visibility and metadata while semantic no-ops pr
     metadata: { locale: "fr" },
   });
   assert.notEqual(metadataA.revision, metadataB.revision);
+});
+
+test("visibility signatures and revisions encode node id boundaries unambiguously", () => {
+  type BoundaryTypes = {
+    Page: {};
+  };
+  const nodeIds = ["a", "b", "a|b", "a\u0000b"];
+  const source = createDocument<BoundaryTypes>({
+    root: {
+      id: "root",
+      type: "Page",
+      attrs: {},
+      children: nodeIds.map((id) => ({
+        id,
+        type: "Page" as const,
+        attrs: {},
+        children: [],
+      })),
+    },
+  });
+  const hide = (ids: readonly string[]) => {
+    const result = applyPatch(source, {
+      format: "tree-patch/v1",
+      patchId: `hide-${ids.length}`,
+      ops: ids.map((nodeId, index) => ({
+        kind: "hideNode" as const,
+        opId: `hide-${index}`,
+        nodeId,
+      })),
+    });
+    assert.equal(result.status, "applied");
+    return result.tree;
+  };
+
+  const twoHidden = hide(["a", "b"]);
+  const pipeHidden = hide(["a|b"]);
+  assert.equal(diffTrees(twoHidden, pipeHidden).ops.length, 3);
+
+  const nulHidden = hide(["a\u0000b"]);
+  assert.notEqual(twoHidden.revision, nulHidden.revision);
 });
 
 test("atomic schema paths are opaque but still change hashes when inner data changes", () => {

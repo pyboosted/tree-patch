@@ -266,7 +266,7 @@ test("changed external snapshots defer revision hashing until revision is read",
   assert.equal(result.status, "applied");
   assert.equal(source.cache.subtreeHashById.size, 0);
   assert.equal(result.tree.cache.subtreeHashById.size, 0);
-  assert.match(result.tree.revision!, /^tree:h2:/);
+  assert.match(result.tree.revision!, /^tree:h3:/);
   assert.ok(source.cache.subtreeHashById.size > 0);
   assert.ok(result.tree.cache.subtreeHashById.size > 0);
 });

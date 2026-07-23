@@ -58,10 +58,10 @@ import {
 
 An input `revision` is treated as an opaque external revision and is preserved
 when applying a patch makes no semantic change. Changed snapshots receive a
-deterministic `tree:h2:` revision derived from content, explicit visibility,
+deterministic `tree:h3:` revision derived from content, explicit visibility,
 patch ownership, and document metadata.
 
-Content, subtree, and path hashes carry an `h2:` algorithm prefix. Hash guards
+Content, subtree, and path hashes carry an `h3:` algorithm prefix. Hash guards
 are intentionally version-specific: a persisted guard produced by a different
 hash algorithm conflicts safely instead of being interpreted as the current
 digest.
@@ -181,6 +181,24 @@ editor.node("hero", "Hero").set(["subtitle"], "Limited offer", {
 ```
 
 This prevents rebasing the patch over an independently added source value.
+
+Numeric builder path segments retain their array intent when intermediate
+containers are absent:
+
+```ts
+editor.node("page", "Page").set(
+  ["sections", 0, "title"],
+  "Introduction",
+  { expectAbsent: true },
+);
+```
+
+This creates `sections` as an array and its first item as an object. A string
+segment such as `"0"` remains an object property instead. The optional
+`SetAttrOp.pathKinds` wire field preserves this distinction because JSON
+pointers alone cannot distinguish an array index from a numeric object key
+before the container exists. Autovivified and existing empty arrays can be
+initialized at index `0`; sparse array creation is rejected.
 
 ## Applying, Validating, and Materializing
 

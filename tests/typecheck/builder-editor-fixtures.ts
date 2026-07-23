@@ -1,6 +1,7 @@
 import {
   createDocument,
   createEditor,
+  applyPatch,
   patchBuilder,
   type TreeDocument,
 } from "../../src/index.js";
@@ -62,6 +63,29 @@ const document: TreeDocument<ContentTypes> = {
 };
 
 const source = createDocument(document);
+const applied = applyPatch(source, {
+  format: "tree-patch/v1",
+  patchId: "readonly-types",
+  ops: [],
+});
+
+// @ts-expect-error immutable snapshots expose readonly root ids
+source.rootId = "other";
+
+const indexedHero = source.nodes.get("hero");
+if (indexedHero) {
+  // @ts-expect-error immutable indexed nodes expose readonly ids
+  indexedHero.id = "other";
+}
+
+if (applied.status === "applied") {
+  if (applied.materialized.type === "Hero") {
+    const narrowedTitle: string = applied.materialized.attrs.title;
+    // @ts-expect-error discriminated materialized attrs exclude other node types
+    applied.materialized.attrs.html;
+    void narrowedTitle;
+  }
+}
 
 const builder = patchBuilder<ContentTypes>();
 builder.node("hero", "Hero").set(["title"], "Promotions");

@@ -192,7 +192,7 @@ function collectExplicitHiddenSignature<TTypes extends NodeTypeMap>(
   tree: IndexedTree<TTypes>,
 ): string {
   const hidden = [...getTreeState(tree).explicitHidden].sort();
-  return hidden.join("|");
+  return hashStableParts(["explicit-hidden", ...hidden]);
 }
 
 function buildPatchId<TTypes extends NodeTypeMap>(

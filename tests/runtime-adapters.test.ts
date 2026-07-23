@@ -6,6 +6,7 @@ import {
   createDocument,
   diffTrees,
   patchBuilder,
+  type TreePatch,
   type TreeSchema,
 } from "../src/index.js";
 
@@ -19,6 +20,9 @@ type RuntimeTypes = {
       label: string;
       when: Date;
     };
+  };
+  Schedule: {
+    dates: Date[];
   };
 };
 
@@ -284,4 +288,163 @@ test("a codec registered for a whole plain object owns its persisted representat
     applied.materialized.attrs.box.when.toISOString(),
     "2026-02-01T00:00:00.000Z",
   );
+});
+
+test("container setAttr operations recursively decode nested codec values", () => {
+  const schema = {
+    types: {
+      Schedule: {
+        adapters: {
+          "/dates/0": {
+            equals: (left: Date, right: Date) =>
+              left.getTime() === right.getTime(),
+            clone: (value: Date) => new Date(value.getTime()),
+            hash: (value: Date) => value.toISOString(),
+            codec: {
+              codecId: "date",
+              serialize: (value: Date) => value.toISOString(),
+              deserialize: (value: string) => new Date(value),
+            },
+          },
+        },
+      },
+    },
+  } satisfies TreeSchema<RuntimeTypes>;
+  const makeTree = (iso: string) => createDocument<RuntimeTypes>({
+    root: {
+      id: "root",
+      type: "Schedule",
+      attrs: {
+        dates: [new Date(iso)],
+      },
+      children: [],
+    },
+  }, { schema });
+  const source = makeTree("2026-01-01T00:00:00.000Z");
+  const target = makeTree("2026-02-01T00:00:00.000Z");
+
+  const diffPatch = diffTrees(source, target);
+  assert.deepEqual(diffPatch.ops[0] && "value" in diffPatch.ops[0]
+    ? diffPatch.ops[0].value
+    : undefined, [{
+    $codec: "date",
+    value: "2026-02-01T00:00:00.000Z",
+  }]);
+
+  const diffApplied = applyPatch(source, diffPatch);
+  assert.equal(diffApplied.status, "applied");
+  assert.equal(diffApplied.materialized.type, "Schedule");
+  if (diffApplied.materialized.type === "Schedule") {
+    assert.ok(diffApplied.materialized.attrs.dates[0] instanceof Date);
+    assert.equal(
+      diffApplied.materialized.attrs.dates[0]?.toISOString(),
+      "2026-02-01T00:00:00.000Z",
+    );
+  }
+
+  const wholeAttrsPatch = patchBuilder<RuntimeTypes>({
+    source,
+    patchId: "whole-schedule",
+  })
+    .node("root", "Schedule")
+    .set([], {
+      dates: [new Date("2026-03-01T00:00:00.000Z")],
+    })
+    .build();
+  const wholeAttrsApplied = applyPatch(source, wholeAttrsPatch);
+  assert.equal(wholeAttrsApplied.status, "applied");
+  assert.equal(wholeAttrsApplied.materialized.type, "Schedule");
+  if (wholeAttrsApplied.materialized.type === "Schedule") {
+    assert.equal(
+      wholeAttrsApplied.materialized.attrs.dates[0]?.toISOString(),
+      "2026-03-01T00:00:00.000Z",
+    );
+  }
+});
+
+test("container adapters clone after nested codec values are decoded", () => {
+  const dateAdapter = {
+    equals: (left: Date, right: Date) =>
+      left.getTime() === right.getTime(),
+    clone: (value: Date) => new Date(value.getTime()),
+    hash: (value: Date) => value.toISOString(),
+    codec: {
+      codecId: "date",
+      serialize: (value: Date) => value.toISOString(),
+      deserialize: (value: string) => new Date(value),
+    },
+  };
+  const schema = {
+    types: {
+      Schedule: {
+        adapters: {
+          "/dates": {
+            equals: (left: Date[], right: Date[]) =>
+              left.length === right.length &&
+              left.every((value, index) =>
+                value.getTime() === right[index]?.getTime()),
+            clone: (value: Date[]) =>
+              value.map((date) => new Date(date.getTime())),
+            hash: (value: Date[]) =>
+              JSON.stringify(value.map((date) => date.toISOString())),
+          },
+          "/dates/0": dateAdapter,
+        },
+      },
+    },
+  } satisfies TreeSchema<RuntimeTypes>;
+  const makeTree = (iso: string) => createDocument<RuntimeTypes>({
+    root: {
+      id: "root",
+      type: "Schedule",
+      attrs: {
+        dates: [new Date(iso)],
+      },
+      children: [],
+    },
+  }, { schema });
+  const source = makeTree("2026-01-01T00:00:00.000Z");
+  const patch = diffTrees(
+    source,
+    makeTree("2026-02-01T00:00:00.000Z"),
+  );
+
+  assert.deepEqual(patch.ops[0] && "value" in patch.ops[0]
+    ? patch.ops[0].value
+    : undefined, [{
+    $codec: "date",
+    value: "2026-02-01T00:00:00.000Z",
+  }]);
+
+  const setDates = patch.ops[0];
+  assert.equal(setDates?.kind, "setAttr");
+  if (!setDates || setDates.kind !== "setAttr") {
+    throw new Error("Expected a setAttr operation.");
+  }
+  const guardedPatch = {
+    ...patch,
+    ops: [{
+      ...setDates,
+      guards: [{
+        kind: "attrEquals",
+        nodeId: "root",
+        path: "/dates",
+        value: [{
+          $codec: "date",
+          value: "2026-01-01T00:00:00.000Z",
+        }],
+      }],
+    }],
+  } satisfies TreePatch;
+
+  const applied = applyPatch(source, guardedPatch);
+  assert.equal(applied.status, "applied");
+  assert.equal(applied.materialized.type, "Schedule");
+  if (applied.materialized.type === "Schedule") {
+    assert.ok(applied.materialized.attrs.dates[0] instanceof Date);
+    assert.equal(
+      applied.materialized.attrs.dates[0]?.toISOString(),
+      "2026-02-01T00:00:00.000Z",
+    );
+  }
 });
