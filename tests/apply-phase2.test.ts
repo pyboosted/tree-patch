@@ -578,6 +578,18 @@ test("materialize uses the same conflict semantics as applyPatch", () => {
   assert.equal(result.conflicts[0]?.kind, "PathInvalid");
 });
 
+test("empty apply reuses the immutable source snapshot", () => {
+  const source = createSourceTree();
+  const result = applyPatch(source, {
+    format: "tree-patch/v1",
+    patchId: "empty-reuse",
+    ops: [],
+  });
+
+  assert.equal(result.status, "applied");
+  assert.equal(result.tree, source);
+});
+
 test("unrelated cached hashes survive while touched hashes are invalidated", () => {
   const source = createSourceTree();
   const legalNodeHash = getNodeHash(source, "legal");

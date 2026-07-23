@@ -81,7 +81,11 @@ export interface EncodedValue {
   value: JsonValue;
 }
 
-export type PersistedValue = JsonValue | EncodedValue;
+export type PersistedValue =
+  | JsonPrimitive
+  | EncodedValue
+  | { [key: string]: PersistedValue }
+  | PersistedValue[];
 
 export interface ValueCodec<T = unknown> {
   codecId: string;

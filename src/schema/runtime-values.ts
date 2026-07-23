@@ -91,82 +91,96 @@ export function encodeRuntimeValueForPointer<TTypes extends NodeTypeMap>(
     return cloneJsonValue(value);
   }
 
-  const adapter = getValueAdapterForSchemas(schemas, nodeType, pointer);
-  const jsonCompatible = isJsonValue(value);
-  if (!jsonCompatible && adapter?.codec) {
-    return encodePersistedValue(value, adapter as never);
-  }
-
-  if (jsonCompatible) {
-    if (Array.isArray(value)) {
-      return value.map((item, index) =>
-        encodeRuntimeValueForPointer(
-          schemas,
-          nodeType,
-          joinJsonPointer(pointer, index),
-          item,
-        ),
-      ) as PersistedValue;
-    }
-
-    if (isPlainObject(value)) {
-      const encoded: Record<string, PersistedValue> = {};
-      for (const key of Object.keys(value)) {
-        setOwnEnumerableValue(
-          encoded as Record<string, unknown>,
-          key,
-          encodeRuntimeValueForPointer(
-            schemas,
-            nodeType,
-            joinJsonPointer(pointer, key),
-            value[key],
-          ),
-        );
+  let root: PersistedValue | undefined;
+  const active = new WeakSet<object>();
+  type Frame =
+    | {
+        kind: "value";
+        value: unknown;
+        pointer: JsonPointer;
+        assign: (value: PersistedValue) => void;
       }
+    | { kind: "exit"; value: object };
+  const stack: Frame[] = [{
+    kind: "value",
+    value,
+    pointer,
+    assign: (encoded) => {
+      root = encoded;
+    },
+  }];
 
-      return encoded as PersistedValue;
+  while (stack.length > 0) {
+    const frame = stack.pop()!;
+    if (frame.kind === "exit") {
+      active.delete(frame.value);
+      continue;
     }
 
-    return encodePersistedValue(value, adapter as never);
-  }
-
-  if (Array.isArray(value)) {
-    return value.map((item, index) =>
-      encodeRuntimeValueForPointer(
-        schemas,
-        nodeType,
-        joinJsonPointer(pointer, index),
-        item,
-      ),
-    ) as PersistedValue;
-  }
-
-  if (isPlainObject(value)) {
-    const encoded: Record<string, PersistedValue> = {};
-    for (const key of Object.keys(value)) {
-      setOwnEnumerableValue(
-        encoded as Record<string, unknown>,
-        key,
-        encodeRuntimeValueForPointer(
-          schemas,
-          nodeType,
-          joinJsonPointer(pointer, key),
-          value[key],
-        ),
+    const adapter = getValueAdapterForSchemas(schemas, nodeType, frame.pointer);
+    if (adapter && !isJsonValue(frame.value) && adapter.codec) {
+      frame.assign(encodePersistedValue(frame.value, adapter as never));
+      continue;
+    }
+    if (
+      frame.value === null ||
+      typeof frame.value === "string" ||
+      typeof frame.value === "boolean" ||
+      (typeof frame.value === "number" && Number.isFinite(frame.value))
+    ) {
+      frame.assign(frame.value);
+      continue;
+    }
+    if (!Array.isArray(frame.value) && !isPlainObject(frame.value)) {
+      throw new MissingCodecError(
+        `Cannot persist non-JSON value for node type "${nodeType}" at pointer "${frame.pointer}" without a codec.`,
+        { details: { nodeType, pointer: frame.pointer } },
+      );
+    }
+    if (active.has(frame.value)) {
+      throw new MalformedPatchError(
+        `Cannot persist a cyclic runtime value at pointer "${frame.pointer}".`,
+        { details: { nodeType, pointer: frame.pointer } },
       );
     }
 
-    return encoded as PersistedValue;
+    active.add(frame.value);
+    stack.push({ kind: "exit", value: frame.value });
+    if (Array.isArray(frame.value)) {
+      const encoded = new Array<PersistedValue>(frame.value.length);
+      frame.assign(encoded);
+      for (let index = frame.value.length - 1; index >= 0; index -= 1) {
+        stack.push({
+          kind: "value",
+          value: frame.value[index],
+          pointer: joinJsonPointer(frame.pointer, index),
+          assign: (child) => {
+            encoded[index] = child;
+          },
+        });
+      }
+      continue;
+    }
+
+    const encoded: Record<string, PersistedValue> = {};
+    frame.assign(encoded);
+    const keys = Object.keys(frame.value);
+    for (let index = keys.length - 1; index >= 0; index -= 1) {
+      const key = keys[index]!;
+      stack.push({
+        kind: "value",
+        value: frame.value[key],
+        pointer: joinJsonPointer(frame.pointer, key),
+        assign: (child) => {
+          setOwnEnumerableValue(
+            encoded as Record<string, unknown>,
+            key,
+            child,
+          );
+        },
+      });
+    }
   }
 
-  if (!adapter?.codec) {
-    throw new MissingCodecError(
-      `Cannot persist non-JSON value for node type "${nodeType}" at pointer "${pointer}" without a codec.`,
-      {
-        details: { nodeType, pointer },
-      },
-    );
-  }
-
-  return encodePersistedValue(value, adapter as never);
+  return root!;
 }

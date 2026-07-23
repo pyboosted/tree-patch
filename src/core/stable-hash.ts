@@ -33,7 +33,7 @@ class StableStringHasher {
   }
 }
 
-export function hashStableParts(parts: readonly string[]): string {
+export function hashStableParts(parts: Iterable<string>): string {
   const hasher = new StableStringHasher();
 
   for (const part of parts) {

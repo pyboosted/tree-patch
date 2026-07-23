@@ -56,6 +56,14 @@ test("persisted values pass JSON through and use codecs for non-JSON values", ()
   const decodedDate = decodePersistedValue(encodedDate, [dateCodec]);
   assert.ok(decodedDate instanceof Date);
   assert.equal(decodedDate.toISOString(), "2026-03-12T00:00:00.000Z");
+
+  const nested = decodePersistedValue({
+    event: {
+      at: encodedDate,
+    },
+  }, [dateCodec]) as { event: { at: Date } };
+  assert.ok(nested.event.at instanceof Date);
+  assert.equal(nested.event.at.toISOString(), "2026-03-12T00:00:00.000Z");
 });
 
 test("persisted values reject missing or unknown codecs", () => {

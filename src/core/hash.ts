@@ -14,7 +14,14 @@ function hashOpaqueValue(
   pointer: JsonPointer,
 ): string {
   if (adapter?.hash) {
-    return hashStableParts(["adapter", adapter.hash(value as never)]);
+    const adaptedHash = adapter.hash(value as never);
+    if (typeof adaptedHash !== "string") {
+      throw new UnsupportedRuntimeValueError(
+        `Adapter hash() at pointer "${pointer}" must return a string.`,
+        { details: { pointer } },
+      );
+    }
+    return hashStableParts(["adapter", adaptedHash]);
   }
 
   if (adapter?.codec) {
@@ -68,18 +75,22 @@ function hashStructuredValue(
       active.delete(frame.value);
       const childHashes = hashes.splice(hashes.length - frame.childCount);
       if (frame.containerKind === "array") {
-        hashes.push(hashStableParts(["array", ...childHashes]));
+        hashes.push(hashStableParts((function* () {
+          yield "array";
+          yield* childHashes;
+        })()));
       } else {
-        hashes.push(hashStableParts([
-          "object",
-          ...frame.keys.map((key, index) =>
-            hashStableParts([
+        hashes.push(hashStableParts((function* () {
+          yield "object";
+          for (let index = 0; index < frame.keys.length; index += 1) {
+            const key = frame.keys[index]!;
+            yield hashStableParts([
               "entry",
               JSON.stringify(key),
               childHashes[index]!,
-            ]),
-          ),
-        ]));
+            ]);
+          }
+        })()));
       }
       continue;
     }
@@ -239,19 +250,22 @@ export function getSubtreeHash<TTypes extends NodeTypeMap>(
 
     const node = getNodeOrThrow(tree, frame.nodeId);
     if (frame.exit) {
-      const childHashes = node.childIds.map((childId) => {
-        const childHash = state.cache.subtreeHashById.get(childId);
-        if (!childHash) {
-          throw new InvalidPointerError(
-            childId,
-            `Node "${childId}" cannot be hashed before its descendants.`,
-          );
-        }
-        return childHash;
-      });
       state.cache.subtreeHashById.set(
         frame.nodeId,
-        hashStableParts(["subtree", getNodeHash(tree, frame.nodeId), ...childHashes]),
+        hashStableParts((function* () {
+          yield "subtree";
+          yield getNodeHash(tree, frame.nodeId);
+          for (const childId of node.childIds) {
+            const childHash = state.cache.subtreeHashById.get(childId);
+            if (!childHash) {
+              throw new InvalidPointerError(
+                childId,
+                `Node "${childId}" cannot be hashed before its descendants.`,
+              );
+            }
+            yield childHash;
+          }
+        })()),
       );
       continue;
     }

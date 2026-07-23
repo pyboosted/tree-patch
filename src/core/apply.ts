@@ -225,7 +225,7 @@ function decodePersistedForPointer<TTypes extends NodeTypeMap>(
   value: PersistedValue,
 ): unknown {
   if (!isEncodedValue(value)) {
-    return cloneJsonValue(value);
+    return value;
   }
 
   const adapter = getAdapterForPointer(overlay, nodeType, pointer);
@@ -273,44 +273,68 @@ function decodeSerializedAttrs<TTypes extends NodeTypeMap>(
   pointer: JsonPointer,
   value: PersistedValue,
 ): unknown {
-  if (isEncodedValue(value)) {
-    return cloneOwnedRuntimeValue(
-      overlay,
-      nodeType,
-      pointer,
-      decodePersistedForPointer(overlay, nodeType, pointer, value),
-    );
-  }
-
-  if (Array.isArray(value)) {
-    return value.map((item, index) =>
-      decodeSerializedAttrs(
+  let root: unknown;
+  const stack: Array<{
+    value: PersistedValue;
+    pointer: JsonPointer;
+    assign: (value: unknown) => void;
+  }> = [{
+    value,
+    pointer,
+    assign: (decoded) => {
+      root = decoded;
+    },
+  }];
+  while (stack.length > 0) {
+    const frame = stack.pop()!;
+    if (isEncodedValue(frame.value)) {
+      frame.assign(cloneOwnedRuntimeValue(
         overlay,
         nodeType,
-        joinJsonPointer(pointer, index),
-        item as PersistedValue,
-      ),
-    );
-  }
-
-  if (isPlainObject(value)) {
-    const result: Record<string, unknown> = {};
-    for (const key of Object.keys(value)) {
-      setOwnEnumerableValue(
-        result,
-        key,
-        decodeSerializedAttrs(
+        frame.pointer,
+        decodePersistedForPointer(
           overlay,
           nodeType,
-          joinJsonPointer(pointer, key),
-          value[key] as PersistedValue,
+          frame.pointer,
+          frame.value,
         ),
-      );
+      ));
+      continue;
     }
-    return result;
+    if (Array.isArray(frame.value)) {
+      const decoded = new Array<unknown>(frame.value.length);
+      frame.assign(decoded);
+      for (let index = frame.value.length - 1; index >= 0; index -= 1) {
+        stack.push({
+          value: frame.value[index] as PersistedValue,
+          pointer: joinJsonPointer(frame.pointer, index),
+          assign: (child) => {
+            decoded[index] = child;
+          },
+        });
+      }
+      continue;
+    }
+    if (isPlainObject(frame.value)) {
+      const decoded: Record<string, unknown> = {};
+      frame.assign(decoded);
+      const keys = Object.keys(frame.value);
+      for (let index = keys.length - 1; index >= 0; index -= 1) {
+        const key = keys[index]!;
+        stack.push({
+          value: frame.value[key] as PersistedValue,
+          pointer: joinJsonPointer(frame.pointer, key),
+          assign: (child) => {
+            setOwnEnumerableValue(decoded, key, child);
+          },
+        });
+      }
+      continue;
+    }
+    frame.assign(frame.value);
   }
 
-  return cloneJsonValue(value);
+  return root;
 }
 
 function setObjectValue(
@@ -322,63 +346,61 @@ function setObjectValue(
     return { ok: true, next: value };
   }
 
-  const segment = segments[0]!;
-  const rest = segments.slice(1);
-  const isLast = rest.length === 0;
-
-  if (Array.isArray(current)) {
-    if (!/^(0|[1-9]\d*)$/.test(segment)) {
+  const parents: Array<{
+    container: unknown[] | Record<string, unknown>;
+    key: number | string;
+  }> = [];
+  let cursor = current;
+  for (let index = 0; index < segments.length; index += 1) {
+    const segment = segments[index]!;
+    const isLast = index === segments.length - 1;
+    if (Array.isArray(cursor)) {
+      if (!/^(0|[1-9]\d*)$/.test(segment)) {
+        return { ok: false };
+      }
+      const arrayIndex = Number(segment);
+      if (arrayIndex < 0 || arrayIndex >= cursor.length) {
+        return { ok: false };
+      }
+      parents.push({ container: cursor, key: arrayIndex });
+      if (!isLast) {
+        cursor = cursor[arrayIndex];
+      }
+      continue;
+    }
+    if (!isPlainObject(cursor)) {
       return { ok: false };
     }
-
-    const index = Number(segment);
-    if (index < 0 || index >= current.length) {
-      return { ok: false };
+    parents.push({ container: cursor, key: segment });
+    if (!isLast) {
+      const existing = Object.hasOwn(cursor, segment)
+        ? cursor[segment]
+        : undefined;
+      if (
+        existing !== undefined &&
+        !isPlainObject(existing) &&
+        !Array.isArray(existing)
+      ) {
+        return { ok: false };
+      }
+      cursor = existing ?? {};
     }
+  }
 
-    const clone = current.slice();
-    if (isLast) {
-      clone[index] = value;
-      return { ok: true, next: clone };
+  let next = value;
+  for (let index = parents.length - 1; index >= 0; index -= 1) {
+    const { container, key } = parents[index]!;
+    if (Array.isArray(container)) {
+      const clone = container.slice();
+      clone[key as number] = next;
+      next = clone;
+    } else {
+      const clone = { ...container };
+      setOwnEnumerableValue(clone, key as string, next);
+      next = clone;
     }
-
-    const nested = setObjectValue(current[index], rest, value);
-    if (!nested.ok) {
-      return nested;
-    }
-
-    clone[index] = nested.next;
-    return { ok: true, next: clone };
   }
-
-  if (!isPlainObject(current)) {
-    return { ok: false };
-  }
-
-  const key = segment;
-  const clone: Record<string, unknown> = { ...current };
-  if (isLast) {
-    setOwnEnumerableValue(clone, key, value);
-    return { ok: true, next: clone };
-  }
-
-  const existing = Object.hasOwn(clone, key) ? clone[key] : undefined;
-  const nextTarget =
-    existing === undefined
-      ? {}
-      : existing;
-
-  if (existing !== undefined && !isPlainObject(existing) && !Array.isArray(existing)) {
-    return { ok: false };
-  }
-
-  const nested = setObjectValue(nextTarget, rest, value);
-  if (!nested.ok) {
-    return nested;
-  }
-
-  setOwnEnumerableValue(clone, key, nested.next);
-  return { ok: true, next: clone };
+  return { ok: true, next };
 }
 
 function removeObjectValue(
@@ -389,57 +411,54 @@ function removeObjectValue(
     return { ok: false };
   }
 
-  const segment = segments[0]!;
-  const rest = segments.slice(1);
-  const isLast = rest.length === 0;
-
-  if (Array.isArray(current)) {
-    if (!/^(0|[1-9]\d*)$/.test(segment)) {
+  const parents: Array<{
+    container: unknown[] | Record<string, unknown>;
+    key: number | string;
+  }> = [];
+  let cursor = current;
+  for (let index = 0; index < segments.length; index += 1) {
+    const segment = segments[index]!;
+    if (Array.isArray(cursor)) {
+      if (!/^(0|[1-9]\d*)$/.test(segment)) {
+        return { ok: false };
+      }
+      const arrayIndex = Number(segment);
+      if (arrayIndex < 0 || arrayIndex >= cursor.length) {
+        return { ok: false };
+      }
+      parents.push({ container: cursor, key: arrayIndex });
+      cursor = cursor[arrayIndex];
+      continue;
+    }
+    if (!isPlainObject(cursor) || !Object.hasOwn(cursor, segment)) {
       return { ok: false };
     }
+    parents.push({ container: cursor, key: segment });
+    cursor = cursor[segment];
+  }
 
-    const index = Number(segment);
-    if (index < 0 || index >= current.length) {
-      return { ok: false };
+  let next: unknown;
+  for (let index = parents.length - 1; index >= 0; index -= 1) {
+    const { container, key } = parents[index]!;
+    if (Array.isArray(container)) {
+      const clone = container.slice();
+      if (index === parents.length - 1) {
+        clone.splice(key as number, 1);
+      } else {
+        clone[key as number] = next;
+      }
+      next = clone;
+    } else {
+      const clone = { ...container };
+      if (index === parents.length - 1) {
+        delete clone[key as string];
+      } else {
+        setOwnEnumerableValue(clone, key as string, next);
+      }
+      next = clone;
     }
-
-    const clone = current.slice();
-    if (isLast) {
-      clone.splice(index, 1);
-      return { ok: true, next: clone };
-    }
-
-    const nested = removeObjectValue(current[index], rest);
-    if (!nested.ok) {
-      return nested;
-    }
-
-    clone[index] = nested.next;
-    return { ok: true, next: clone };
   }
-
-  if (!isPlainObject(current)) {
-    return { ok: false };
-  }
-
-  const key = segment;
-  if (!Object.hasOwn(current, key)) {
-    return { ok: false };
-  }
-
-  const clone: Record<string, unknown> = { ...current };
-  if (isLast) {
-    delete clone[key];
-    return { ok: true, next: clone };
-  }
-
-  const nested = removeObjectValue(clone[key], rest);
-  if (!nested.ok) {
-    return nested;
-  }
-
-  setOwnEnumerableValue(clone, key, nested.next);
-  return { ok: true, next: clone };
+  return { ok: true, next };
 }
 
 function evaluateGuards<TTypes extends NodeTypeMap>(
@@ -1750,7 +1769,10 @@ export function executePatchInternal<TTypes extends NodeTypeMap>(
     return { revision, conflicts, appliedOps, appliedOpIds, skippedOpIds };
   }
 
-  const tree = buildSnapshotFromOverlay(session.overlay, source, sourceStateHash);
+  const tree =
+    appliedOps.length === 0
+      ? source
+      : buildSnapshotFromOverlay(session.overlay, source, sourceStateHash);
   const materialized = buildMaterializedTree(
     session.overlay,
     session.overlay.rootId,

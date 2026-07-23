@@ -318,19 +318,84 @@ export function decodePersistedValue(
   value: PersistedValue,
   codecs: readonly ValueCodec[] = [],
 ): unknown {
-  if (!isEncodedValue(value)) {
-    return cloneJsonValue(value);
+  let root: unknown;
+  const active = new WeakSet<object>();
+  type Frame =
+    | {
+        kind: "value";
+        value: PersistedValue;
+        assign: (value: unknown) => void;
+      }
+    | { kind: "exit"; value: object };
+  const stack: Frame[] = [{
+    kind: "value",
+    value,
+    assign: (decoded) => {
+      root = decoded;
+    },
+  }];
+
+  while (stack.length > 0) {
+    const frame = stack.pop()!;
+    if (frame.kind === "exit") {
+      active.delete(frame.value);
+      continue;
+    }
+    if (isEncodedValue(frame.value)) {
+      const encoded = frame.value;
+      const codec = codecs.find(
+        (candidate) => candidate.codecId === encoded.$codec,
+      );
+      if (!codec) {
+        throw new MissingCodecError(
+          `Codec "${encoded.$codec}" is not registered for persisted value decoding.`,
+          { details: { codecId: encoded.$codec } },
+        );
+      }
+      frame.assign(codec.deserialize(encoded.value));
+      continue;
+    }
+    if (frame.value === null || typeof frame.value !== "object") {
+      frame.assign(frame.value);
+      continue;
+    }
+    if (active.has(frame.value)) {
+      throw new UnsupportedRuntimeValueError(
+        "Cannot decode a cyclic persisted value.",
+      );
+    }
+    active.add(frame.value);
+    stack.push({ kind: "exit", value: frame.value });
+
+    if (Array.isArray(frame.value)) {
+      const decoded = new Array<unknown>(frame.value.length);
+      frame.assign(decoded);
+      for (let index = frame.value.length - 1; index >= 0; index -= 1) {
+        stack.push({
+          kind: "value",
+          value: frame.value[index]!,
+          assign: (child) => {
+            decoded[index] = child;
+          },
+        });
+      }
+      continue;
+    }
+
+    const decoded: Record<string, unknown> = {};
+    frame.assign(decoded);
+    const keys = Object.keys(frame.value);
+    for (let index = keys.length - 1; index >= 0; index -= 1) {
+      const key = keys[index]!;
+      stack.push({
+        kind: "value",
+        value: frame.value[key]!,
+        assign: (child) => {
+          setOwnEnumerableValue(decoded, key, child);
+        },
+      });
+    }
   }
 
-  const codec = codecs.find((candidate) => candidate.codecId === value.$codec);
-  if (!codec) {
-    throw new MissingCodecError(
-      `Codec "${value.$codec}" is not registered for persisted value decoding.`,
-      {
-        details: { codecId: value.$codec },
-      },
-    );
-  }
-
-  return codec.deserialize(value.value);
+  return root;
 }

@@ -5,6 +5,7 @@ import {
   applyPatch,
   createDocument,
   diffTrees,
+  patchBuilder,
 } from "../src/index.js";
 
 type DeepTypes = {
@@ -47,4 +48,42 @@ test("deep leaf changes diff and apply without recursive structural traversal", 
     result.tree.nodes.get(`node-${depth}`)?.attrs.value,
     2,
   );
+});
+
+test("deep attribute paths diff, encode, set, and decode without recursive calls", () => {
+  const nestedAttrs = (depth: number, leaf: number): unknown => {
+    let value: unknown = { value: leaf };
+    for (let index = 0; index < depth; index += 1) {
+      value = { next: value };
+    }
+    return value;
+  };
+  type AttrTypes = {
+    DeepAttrs: unknown;
+  };
+  const makeTree = (attrs: unknown) =>
+    createDocument<AttrTypes>({
+      root: {
+        id: "root",
+        type: "DeepAttrs",
+        attrs,
+        children: [],
+      },
+    });
+
+  const base = makeTree(nestedAttrs(1_000, 1));
+  const targetAttrs = nestedAttrs(1_000, 2);
+  const diff = diffTrees(base, makeTree(targetAttrs));
+  assert.equal(diff.ops.length, 1);
+  assert.equal(applyPatch(base, diff).status, "applied");
+
+  const rootPatch = patchBuilder<AttrTypes>({
+    source: base,
+    patchId: "deep-root-value",
+  })
+    .node("root", "DeepAttrs")
+    .set([], targetAttrs)
+    .build();
+  const result = applyPatch(base, rootPatch);
+  assert.equal(result.status, "applied");
 });

@@ -712,7 +712,7 @@ class PatchBuilderController<TTypes extends NodeTypeMap> {
     };
 
     assertPatchEnvelope(patch);
-    return structuredClone(patch);
+    return patch;
   }
 }
 

@@ -44,11 +44,10 @@ import {
   encodeRuntimeValueForPointer,
   getValueAdapterForSchemas,
   isAtomicForSchemas,
-  runtimeValuesEqualForSchemas,
   schemasRequireSemanticComparison,
 } from "../schema/runtime-values.js";
 import { hashStableParts } from "./stable-hash.js";
-import { cloneJsonValue } from "../schema/adapters.js";
+import { cloneJsonValue, deepEqual } from "../schema/adapters.js";
 import { compareStrings } from "./order.js";
 
 interface DiffContext<TTypes extends NodeTypeMap> {
@@ -277,25 +276,32 @@ function countAttrChanges<TTypes extends NodeTypeMap>(
   }> = [{ baseValue, targetValue, pointer }];
   while (stack.length > 0) {
     const current = stack.pop()!;
+    const adapter = getValueAdapterForSchemas(
+      schemas,
+      nodeType,
+      current.pointer,
+    );
     if (
-      runtimeValuesEqualForSchemas(
-        schemas,
-        nodeType,
-        current.pointer,
-        current.baseValue,
-        current.targetValue,
-      )
+      adapter
+        ? adapter.equals(
+            current.baseValue as never,
+            current.targetValue as never,
+          )
+        : Object.is(current.baseValue, current.targetValue)
     ) {
       continue;
     }
     if (
       isAtomicForSchemas(schemas, nodeType, current.pointer) ||
-      getValueAdapterForSchemas(schemas, nodeType, current.pointer) ||
+      adapter ||
       Array.isArray(current.baseValue) ||
       Array.isArray(current.targetValue) ||
       !isPlainObject(current.baseValue) ||
       !isPlainObject(current.targetValue)
     ) {
+      if (!adapter && deepEqual(current.baseValue, current.targetValue)) {
+        continue;
+      }
       total += 1;
       continue;
     }
@@ -769,124 +775,124 @@ function collectAttrOpsForNode<TTypes extends NodeTypeMap>(
   }
 
   const nodeType = String(targetNode.type);
-  const adapter = getValueAdapterForSchemas(context.schemas, nodeType, pointer);
-  if (
-    runtimeValuesEqualForSchemas(
+  const stack: Array<{
+    pointer: JsonPointer;
+    baseValue: unknown;
+    targetValue: unknown;
+  }> = [{ pointer, baseValue, targetValue }];
+  while (stack.length > 0) {
+    const current = stack.pop()!;
+    const adapter = getValueAdapterForSchemas(
       context.schemas,
       nodeType,
-      pointer,
-      baseValue,
-      targetValue,
-    )
-  ) {
-    return;
-  }
-
-  const baseAtPath = pointer === "" ? { ok: true as const } : getValueAtPointer(context.base, nodeId, pointer);
-  const targetAtPath = pointer === "" ? { ok: true as const } : getValueAtPointer(context.target, nodeId, pointer);
-  if ((!adapter || adapter.hash) && pointer !== "" && baseAtPath.ok && targetAtPath.ok) {
-    try {
-      if (getPathHash(context.base, nodeId, pointer) === getPathHash(context.target, nodeId, pointer)) {
-        return;
-      }
-    } catch {
-      // Fall through to structural comparison if either side cannot provide a path hash.
+      current.pointer,
+    );
+    if (
+      adapter
+        ? adapter.equals(
+            current.baseValue as never,
+            current.targetValue as never,
+          )
+        : Object.is(current.baseValue, current.targetValue)
+    ) {
+      continue;
     }
-  }
 
-  if (
-    pointer === "" &&
-    !isPlainObject(baseValue) &&
-    !isPlainObject(targetValue)
-  ) {
-    collected.push({
-      kind: "setAttr",
-      opId: context.opIds("set", nodeId, ""),
-      nodeId,
-      path: "",
-      value: encodeRuntimeValueForPointer(context.schemas, String(targetNode.type), "", targetValue),
-      guards: [createValueGuard(context, nodeId, "")].filter(
-        (guard): guard is Guard => guard !== undefined,
-      ),
-    });
-    return;
-  }
-
-  if (
-    isAtomicForSchemas(context.schemas, nodeType, pointer) ||
-    adapter ||
-    Array.isArray(baseValue) ||
-    Array.isArray(targetValue) ||
-    !isPlainObject(baseValue) ||
-    !isPlainObject(targetValue)
-  ) {
-    if (pointer === "") {
+    if (
+      current.pointer === "" &&
+      !isPlainObject(current.baseValue) &&
+      !isPlainObject(current.targetValue)
+    ) {
       collected.push({
         kind: "setAttr",
         opId: context.opIds("set", nodeId, ""),
         nodeId,
         path: "",
-        value: encodeRuntimeValueForPointer(context.schemas, String(targetNode.type), "", targetValue),
+        value: encodeRuntimeValueForPointer(
+          context.schemas,
+          nodeType,
+          "",
+          current.targetValue,
+        ),
         guards: [createValueGuard(context, nodeId, "")].filter(
           (guard): guard is Guard => guard !== undefined,
         ),
       });
-      return;
-    }
-
-    collected.push({
-      kind: "setAttr",
-      opId: context.opIds("set", nodeId, pointer),
-      nodeId,
-      path: pointer,
-      value: encodeRuntimeValueForPointer(context.schemas, String(targetNode.type), pointer, targetValue),
-      guards: [createValueGuard(context, nodeId, pointer)].filter((guard): guard is Guard => guard !== undefined),
-    });
-    return;
-  }
-
-  const keys = [...new Set([...Object.keys(baseValue), ...Object.keys(targetValue)])].sort();
-  for (const key of keys) {
-    const nextPointer = joinJsonPointer(pointer, key);
-    const hasBase = Object.hasOwn(baseValue, key);
-    const hasTarget = Object.hasOwn(targetValue, key);
-
-    if (!hasTarget) {
-      collected.push({
-        kind: "removeAttr",
-        opId: context.opIds("remove-attr", nodeId, nextPointer),
-        nodeId,
-        path: nextPointer,
-        guards: [createValueGuard(context, nodeId, nextPointer)].filter((guard): guard is Guard => guard !== undefined),
-      });
       continue;
     }
 
-    if (!hasBase) {
+    if (
+      isAtomicForSchemas(context.schemas, nodeType, current.pointer) ||
+      adapter ||
+      Array.isArray(current.baseValue) ||
+      Array.isArray(current.targetValue) ||
+      !isPlainObject(current.baseValue) ||
+      !isPlainObject(current.targetValue)
+    ) {
+      if (
+        !adapter &&
+        deepEqual(current.baseValue, current.targetValue)
+      ) {
+        continue;
+      }
       collected.push({
         kind: "setAttr",
-        opId: context.opIds("set", nodeId, nextPointer),
+        opId: context.opIds("set", nodeId, current.pointer),
         nodeId,
-        path: nextPointer,
+        path: current.pointer,
         value: encodeRuntimeValueForPointer(
           context.schemas,
-          String(targetNode.type),
-          nextPointer,
-          targetValue[key],
+          nodeType,
+          current.pointer,
+          current.targetValue,
         ),
-        guards: [{ kind: "attrAbsent", nodeId, path: nextPointer }],
+        guards: [createValueGuard(context, nodeId, current.pointer)].filter(
+          (guard): guard is Guard => guard !== undefined,
+        ),
       });
       continue;
     }
 
-    collectAttrOpsForNode(
-      context,
-      nodeId,
-      nextPointer,
-      baseValue[key],
-      targetValue[key],
-      collected,
-    );
+    const keys = [...new Set([
+      ...Object.keys(current.baseValue),
+      ...Object.keys(current.targetValue),
+    ])].sort();
+    for (const key of keys) {
+      const nextPointer = joinJsonPointer(current.pointer, key);
+      const hasBase = Object.hasOwn(current.baseValue, key);
+      const hasTarget = Object.hasOwn(current.targetValue, key);
+      if (!hasTarget) {
+        collected.push({
+          kind: "removeAttr",
+          opId: context.opIds("remove-attr", nodeId, nextPointer),
+          nodeId,
+          path: nextPointer,
+          guards: [createValueGuard(context, nodeId, nextPointer)].filter(
+            (guard): guard is Guard => guard !== undefined,
+          ),
+        });
+      } else if (!hasBase) {
+        collected.push({
+          kind: "setAttr",
+          opId: context.opIds("set", nodeId, nextPointer),
+          nodeId,
+          path: nextPointer,
+          value: encodeRuntimeValueForPointer(
+            context.schemas,
+            nodeType,
+            nextPointer,
+            current.targetValue[key],
+          ),
+          guards: [{ kind: "attrAbsent", nodeId, path: nextPointer }],
+        });
+      } else {
+        stack.push({
+          pointer: nextPointer,
+          baseValue: current.baseValue[key],
+          targetValue: current.targetValue[key],
+        });
+      }
+    }
   }
 }
 
