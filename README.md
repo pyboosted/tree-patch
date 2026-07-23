@@ -294,6 +294,10 @@ Notes:
 
 - JSON-compatible values work without codecs
 - non-JSON persisted patch values require a codec
+- `equals()` defines semantic equality everywhere; if `hash()` is present, it must be deterministic and return the same hash for values that `equals()` considers equal
+- in the default `clone` ownership mode, adapter-backed values returned from snapshots and materialized trees are defensive clones
+- `assumeImmutable` skips defensive cloning and is a caller promise that all supplied and returned runtime values remain immutable
+- adapter and codec descriptors are validated and snapshotted when the schema is compiled
 - the envelope shape `{ $codec, value }` is reserved for encoded persisted values
 
 ## Public API

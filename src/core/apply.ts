@@ -43,6 +43,10 @@ import {
 import { parseJsonPointer, resolvePointer } from "../schema/pointers.js";
 import { getValueAdapterForPointer } from "../schema/schema.js";
 import {
+  exposeIndexedNode,
+  exposeRuntimeAttrs,
+} from "../schema/runtime-clone.js";
+import {
   clearSubtreeState,
   collectSubtreeNodeIds,
   createOverlayState,
@@ -1413,7 +1417,10 @@ function buildSnapshotFromOverlay<TTypes extends NodeTypeMap>(
 
   const tree = {
     rootId: overlay.rootId,
-    nodes: createReadonlyMapView(overlay.nodes),
+    nodes: createReadonlyMapView(
+      overlay.nodes,
+      (node) => exposeIndexedNode(overlay.schema, overlay.ownership, node),
+    ),
     index: Object.freeze({
       parentById: createReadonlyMapView(overlay.index.parentById),
       positionById: createReadonlyMapView(overlay.index.positionById),
@@ -1473,7 +1480,12 @@ function buildMaterializedTree<TTypes extends NodeTypeMap>(
   const materialized: MaterializedNode<TTypes> = {
     id: node.id,
     type: node.type,
-    attrs: node.attrs,
+    attrs: exposeRuntimeAttrs(
+      overlay.schema,
+      overlay.ownership,
+      String(node.type),
+      node.attrs,
+    ) as MaterializedNode<TTypes>["attrs"],
     children,
   };
   if (Object.keys(state).length > 0) {

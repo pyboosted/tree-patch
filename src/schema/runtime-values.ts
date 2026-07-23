@@ -7,6 +7,7 @@ import { MalformedPatchError, MissingCodecError } from "../core/errors.js";
 import { isPlainObject, setOwnEnumerableValue } from "../core/snapshot.js";
 import {
   cloneJsonValue,
+  deepEqual,
   encodePersistedValue,
   isJsonValue,
 } from "./adapters.js";
@@ -42,6 +43,35 @@ export function isAtomicForSchemas<TTypes extends NodeTypeMap>(
   return schemas.some((schema) => isAtomicPointer(schema, nodeType, pointer));
 }
 
+export function runtimeValuesEqualForSchemas<TTypes extends NodeTypeMap>(
+  schemas: CompiledSchemas<TTypes>,
+  nodeType: string,
+  pointer: JsonPointer,
+  left: unknown,
+  right: unknown,
+): boolean {
+  const adapter = getValueAdapterForSchemas(schemas, nodeType, pointer);
+  return adapter
+    ? adapter.equals(left as never, right as never)
+    : deepEqual(left, right);
+}
+
+export function schemasRequireSemanticComparison<TTypes extends NodeTypeMap>(
+  schemas: CompiledSchemas<TTypes>,
+): boolean {
+  for (const schema of schemas) {
+    for (const spec of schema.types.values()) {
+      for (const adapter of spec.adapters.values()) {
+        if (!adapter.hash) {
+          return true;
+        }
+      }
+    }
+  }
+
+  return false;
+}
+
 export function encodeRuntimeValueForPointer<TTypes extends NodeTypeMap>(
   schemas: CompiledSchemas<TTypes>,
   nodeType: string | undefined,
@@ -62,7 +92,12 @@ export function encodeRuntimeValueForPointer<TTypes extends NodeTypeMap>(
   }
 
   const adapter = getValueAdapterForSchemas(schemas, nodeType, pointer);
-  if (isJsonValue(value)) {
+  const jsonCompatible = isJsonValue(value);
+  if (!jsonCompatible && adapter?.codec) {
+    return encodePersistedValue(value, adapter as never);
+  }
+
+  if (jsonCompatible) {
     if (Array.isArray(value)) {
       return value.map((item, index) =>
         encodeRuntimeValueForPointer(

@@ -28,7 +28,6 @@ import { getPathHash, getSubtreeHash } from "../core/hash.js";
 import { assertPatchEnvelope, normalizePosition } from "../core/patch-validation.js";
 import { isPlainObject } from "../core/snapshot.js";
 import { getTreeState } from "../core/state.js";
-import { deepEqual } from "../schema/adapters.js";
 import { pathToPointer, resolvePointer } from "../schema/pointers.js";
 import type { CompiledTreeSchema } from "../schema/schema.js";
 import { compileTreeSchema } from "../schema/schema.js";
@@ -37,6 +36,7 @@ import {
   encodeRuntimeValueForPointer,
   getValueAdapterForSchemas,
   isAtomicForSchemas,
+  runtimeValuesEqualForSchemas,
 } from "../schema/runtime-values.js";
 
 type NodeTypeKey<TTypes extends NodeTypeMap> = Extract<keyof TTypes, string>;
@@ -180,8 +180,12 @@ function shouldPreferHash<TTypes extends NodeTypeMap>(
     return false;
   }
 
+  const adapter = getValueAdapterForSchemas(schemas, nodeType, pointer);
+  if (adapter) {
+    return adapter.hash !== undefined;
+  }
+
   return (
-    getValueAdapterForSchemas(schemas, nodeType, pointer) !== undefined ||
     isAtomicForSchemas(schemas, nodeType, pointer) ||
     Array.isArray(value) ||
     isPlainObject(value)
@@ -353,33 +357,36 @@ class PatchBuilderController<TTypes extends NodeTypeMap> {
     if (currentNode) {
       const resolution = resolvePointer(currentNode.attrs, pointer);
       if (resolution.ok) {
-        const encodedActual = encodeRuntimeValueForPointer(
-          this.schemas,
-          nodeType,
-          pointer,
-          resolution.value,
-        );
-        const encodedExpected = encodeRuntimeValueForPointer(
-          this.schemas,
-          nodeType,
-          pointer,
-          expected,
-        );
-
-        if (!deepEqual(encodedActual, encodedExpected)) {
+        if (
+          nodeType
+            ? !runtimeValuesEqualForSchemas(
+                this.schemas,
+                nodeType,
+                pointer,
+                resolution.value,
+                expected,
+              )
+            : !Object.is(resolution.value, expected)
+        ) {
           throw new MalformedPatchError(
             `Expected value for node "${nodeId}" at "${pointer}" does not match the current builder state.`,
             {
               details: {
                 nodeId,
                 path: pointer,
-                actual: encodedActual,
-                expected: encodedExpected,
+                actual: resolution.value,
+                expected,
               },
             },
           );
         }
 
+        const encodedActual = encodeRuntimeValueForPointer(
+          this.schemas,
+          nodeType,
+          pointer,
+          resolution.value,
+        );
         if (shouldPreferHash(this.schemas, nodeType, pointer, resolution.value)) {
           return [{
             kind: "attrHash",

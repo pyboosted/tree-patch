@@ -25,9 +25,6 @@ import { executePatchInternal } from "./apply.js";
 import { getNodeHash, getPathHash, getSubtreeHash, joinJsonPointer } from "./hash.js";
 import { getTreeState } from "./state.js";
 import { isPlainObject } from "./snapshot.js";
-import {
-  deepEqual,
-} from "../schema/adapters.js";
 import type { CompiledTreeSchema } from "../schema/schema.js";
 import {
   compileTreeSchema,
@@ -38,6 +35,8 @@ import {
   encodeRuntimeValueForPointer,
   getValueAdapterForSchemas,
   isAtomicForSchemas,
+  runtimeValuesEqualForSchemas,
+  schemasRequireSemanticComparison,
 } from "../schema/runtime-values.js";
 import { hashStableParts } from "./stable-hash.js";
 
@@ -225,7 +224,7 @@ function countAttrChanges<TTypes extends NodeTypeMap>(
   targetValue: unknown,
   pointer: JsonPointer,
 ): number {
-  if (deepEqual(baseValue, targetValue)) {
+  if (runtimeValuesEqualForSchemas(schemas, nodeType, pointer, baseValue, targetValue)) {
     return 0;
   }
 
@@ -560,7 +559,18 @@ function createValueGuard<TTypes extends NodeTypeMap>(
   }
 
   const value = baseValue.value;
-  if (value === null || typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
+  const adapter = getValueAdapterForSchemas(
+    context.schemas,
+    String(baseNode.type),
+    pointer,
+  );
+  if (
+    (adapter !== undefined && adapter.hash === undefined) ||
+    value === null ||
+    typeof value === "string" ||
+    typeof value === "number" ||
+    typeof value === "boolean"
+  ) {
     return {
       kind: "attrEquals",
       nodeId,
@@ -591,9 +601,23 @@ function collectAttrOpsForNode<TTypes extends NodeTypeMap>(
     return;
   }
 
+  const nodeType = String(targetNode.type);
+  const adapter = getValueAdapterForSchemas(context.schemas, nodeType, pointer);
+  if (
+    runtimeValuesEqualForSchemas(
+      context.schemas,
+      nodeType,
+      pointer,
+      baseValue,
+      targetValue,
+    )
+  ) {
+    return;
+  }
+
   const baseAtPath = pointer === "" ? { ok: true as const } : getValueAtPointer(context.base, nodeId, pointer);
   const targetAtPath = pointer === "" ? { ok: true as const } : getValueAtPointer(context.target, nodeId, pointer);
-  if (pointer !== "" && baseAtPath.ok && targetAtPath.ok) {
+  if ((!adapter || adapter.hash) && pointer !== "" && baseAtPath.ok && targetAtPath.ok) {
     try {
       if (getPathHash(context.base, nodeId, pointer) === getPathHash(context.target, nodeId, pointer)) {
         return;
@@ -601,10 +625,6 @@ function collectAttrOpsForNode<TTypes extends NodeTypeMap>(
     } catch {
       // Fall through to structural comparison if either side cannot provide a path hash.
     }
-  }
-
-  if (deepEqual(baseValue, targetValue)) {
-    return;
   }
 
   if (
@@ -626,8 +646,8 @@ function collectAttrOpsForNode<TTypes extends NodeTypeMap>(
   }
 
   if (
-    isAtomicForSchemas(context.schemas, String(targetNode.type), pointer) ||
-    getValueAdapterForSchemas(context.schemas, String(targetNode.type), pointer) ||
+    isAtomicForSchemas(context.schemas, nodeType, pointer) ||
+    adapter ||
     Array.isArray(baseValue) ||
     Array.isArray(targetValue) ||
     !isPlainObject(baseValue) ||
@@ -975,6 +995,7 @@ function collectAttrOps<TTypes extends NodeTypeMap>(
   context: DiffContext<TTypes>,
 ): Array<SetAttrOp | RemoveAttrOp> {
   const ops: Array<SetAttrOp | RemoveAttrOp> = [];
+  const requiresSemanticComparison = schemasRequireSemanticComparison(context.schemas);
 
   for (const [nodeId, baseNode] of context.base.nodes) {
     const targetNode = context.target.nodes.get(nodeId);
@@ -985,11 +1006,17 @@ function collectAttrOps<TTypes extends NodeTypeMap>(
       continue;
     }
 
-    if (getSubtreeHash(context.base, nodeId) === getSubtreeHash(context.target, nodeId)) {
+    if (
+      !requiresSemanticComparison &&
+      getSubtreeHash(context.base, nodeId) === getSubtreeHash(context.target, nodeId)
+    ) {
       continue;
     }
 
-    if (getNodeHash(context.base, nodeId) !== getNodeHash(context.target, nodeId)) {
+    if (
+      requiresSemanticComparison ||
+      getNodeHash(context.base, nodeId) !== getNodeHash(context.target, nodeId)
+    ) {
       collectAttrOpsForNode(context, nodeId, "", baseNode.attrs, targetNode.attrs, ops);
     }
   }
@@ -1221,9 +1248,11 @@ export function diffTrees<TTypes extends NodeTypeMap>(
     );
   }
 
+  const schemas = getCompiledSchemas(base, target, options);
   const baseHiddenSignature = collectExplicitHiddenSignature(base);
   const targetHiddenSignature = collectExplicitHiddenSignature(target);
   if (
+    !schemasRequireSemanticComparison(schemas) &&
     getSubtreeHash(base, base.rootId) === getSubtreeHash(target, target.rootId) &&
     baseHiddenSignature === targetHiddenSignature
   ) {
@@ -1235,7 +1264,6 @@ export function diffTrees<TTypes extends NodeTypeMap>(
     };
   }
 
-  const schemas = getCompiledSchemas(base, target, options);
   const targetPatchOwned = getEffectivePatchOwnedSet(base, target);
   const replacementRoots = collectReplacementRoots(base, target, options, schemas, targetPatchOwned);
   const context: DiffContext<TTypes> = {

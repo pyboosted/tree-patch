@@ -511,7 +511,7 @@ test("diffTrees serializes codec-backed values and rejects missing codecs", () =
       value: "2025-02-10T00:00:00.000Z",
     },
   );
-  assert.equal(patch.ops[0]?.guards?.[0]?.kind, "attrHash");
+  assert.equal(patch.ops[0]?.guards?.[0]?.kind, "attrEquals");
 
   const baseWithoutCodec = createTree(createBaseDocument("rev-1", january), schemaWithoutDateCodec);
   const targetWithoutCodec = createTree(createBaseDocument("rev-1", february), schemaWithoutDateCodec);

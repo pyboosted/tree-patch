@@ -15,15 +15,15 @@ import {
 import {
   createReadonlyMapView,
   deepFreezePlainData,
-  isPlainObject,
-  setOwnEnumerableValue,
 } from "./snapshot.js";
 import { attachTreeState } from "./state.js";
 import { getSubtreeHash } from "./hash.js";
-import { cloneRuntimeValue, isJsonValue } from "../schema/adapters.js";
 import type { CompiledTreeSchema } from "../schema/schema.js";
-import { compileTreeSchema, getValueAdapterForPointer } from "../schema/schema.js";
-import { joinJsonPointer } from "./hash.js";
+import { compileTreeSchema } from "../schema/schema.js";
+import {
+  cloneRuntimeTreeValue,
+  exposeIndexedNode,
+} from "../schema/runtime-clone.js";
 
 const NODE_ENVELOPE_KEYS = new Set(["id", "type", "attrs", "children"]);
 
@@ -97,70 +97,6 @@ function assertNodeEnvelope(node: unknown, location: string, isRoot: boolean): a
   }
 }
 
-function cloneNodeValue<TTypes extends NodeTypeMap>(
-  nodeType: string,
-  value: unknown,
-  pointer: JsonPointer,
-  schema: CompiledTreeSchema<TTypes>,
-): unknown {
-  const adapter = getValueAdapterForPointer(schema, nodeType, pointer);
-  if (adapter) {
-    return cloneRuntimeValue(value, adapter, pointer);
-  }
-
-  if (isJsonValue(value)) {
-    if (Array.isArray(value)) {
-      return value.map((item, index) =>
-        cloneNodeValue(nodeType, item, joinJsonPointer(pointer, index), schema),
-      );
-    }
-
-    if (isPlainObject(value)) {
-      const clone: Record<string, unknown> = {};
-      for (const key of Object.keys(value)) {
-        setOwnEnumerableValue(
-          clone,
-          key,
-          cloneNodeValue(
-            nodeType,
-            value[key],
-            joinJsonPointer(pointer, key),
-            schema,
-          ),
-        );
-      }
-      return clone;
-    }
-
-    return value;
-  }
-
-  if (Array.isArray(value)) {
-    return value.map((item, index) =>
-      cloneNodeValue(nodeType, item, joinJsonPointer(pointer, index), schema),
-    );
-  }
-
-  if (isPlainObject(value)) {
-    const clone: Record<string, unknown> = {};
-    for (const key of Object.keys(value)) {
-      setOwnEnumerableValue(
-        clone,
-        key,
-        cloneNodeValue(nodeType, value[key], joinJsonPointer(pointer, key), schema),
-      );
-    }
-    return clone;
-  }
-
-  throw new UnsupportedRuntimeValueError(
-    `Node "${nodeType}" contains a non-JSON runtime value at pointer "${pointer}" without an adapter.`,
-    {
-      details: { nodeType, pointer },
-    },
-  );
-}
-
 function prepareNodeAttrs<TTypes extends NodeTypeMap>(
   nodeType: string,
   attrs: unknown,
@@ -171,7 +107,9 @@ function prepareNodeAttrs<TTypes extends NodeTypeMap>(
     return attrs;
   }
 
-  return deepFreezePlainData(cloneNodeValue(nodeType, attrs, "", schema));
+  return deepFreezePlainData(
+    cloneRuntimeTreeValue(schema, nodeType, "", attrs),
+  );
 }
 
 export function createDocument<TTypes extends NodeTypeMap>(
@@ -248,7 +186,10 @@ export function createDocument<TTypes extends NodeTypeMap>(
 
   const treeBase = {
     rootId,
-    nodes: createReadonlyMapView(nodes),
+    nodes: createReadonlyMapView(
+      nodes,
+      (node) => exposeIndexedNode(schema, ownership, node),
+    ),
     index: Object.freeze({
       parentById: createReadonlyMapView(parentById),
       positionById: createReadonlyMapView(positionById),

@@ -86,6 +86,70 @@ export function createReadonlyMapView<TKey, TValue, TViewValue = TValue>(
   return new ReadonlyMapView(map, mapValue);
 }
 
+class ReadonlySetView<TValue> implements ReadonlySet<TValue> {
+  readonly #set: ReadonlySet<TValue>;
+
+  constructor(set: ReadonlySet<TValue>) {
+    this.#set = set;
+    Object.freeze(this);
+  }
+
+  get size(): number {
+    return this.#set.size;
+  }
+
+  has(value: TValue): boolean {
+    return this.#set.has(value);
+  }
+
+  forEach(
+    callbackfn: (value: TValue, value2: TValue, set: ReadonlySet<TValue>) => void,
+    thisArg?: unknown,
+  ): void {
+    for (const value of this.#set) {
+      callbackfn.call(thisArg, value, value, this);
+    }
+  }
+
+  *entries(): SetIterator<[TValue, TValue]> {
+    for (const value of this.#set) {
+      yield [value, value];
+    }
+  }
+
+  keys(): SetIterator<TValue> {
+    return this.values();
+  }
+
+  *values(): SetIterator<TValue> {
+    yield* this.#set.values();
+  }
+
+  [Symbol.iterator](): SetIterator<TValue> {
+    return this.values();
+  }
+
+  add(): never {
+    throw new TypeError('Cannot call "add" on a read-only Set view.');
+  }
+
+  delete(): never {
+    throw new TypeError('Cannot call "delete" on a read-only Set view.');
+  }
+
+  clear(): never {
+    throw new TypeError('Cannot call "clear" on a read-only Set view.');
+  }
+
+  readonly [Symbol.toStringTag] = "Set";
+}
+
+export function createReadonlySetView<TValue>(
+  set: ReadonlySet<TValue>,
+): ReadonlySet<TValue> {
+  return new ReadonlySetView(set);
+}
+
 export function isPlainObject(value: unknown): value is Record<string, unknown> {
   if (value === null || typeof value !== "object" || Array.isArray(value)) {
     return false;
