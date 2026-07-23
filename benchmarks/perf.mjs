@@ -183,6 +183,18 @@ rows.push(measure("apply: insert 8k siblings", () =>
 const deepApplyPatch = diffTrees(deepApplyBase, deepApplyTarget);
 rows.push(measure("apply: update 4k-node chain", () =>
   applyPatch(deepApplyBase, deepApplyPatch).status));
+rows.push(measure("apply: cold external 100k-value tree", () =>
+  applyPatch(largeValueTree, {
+    format: "tree-patch/v1",
+    patchId: "cold-external",
+    ops: [{
+      kind: "setAttr",
+      opId: "set-marker",
+      nodeId: "large-value",
+      path: "/marker",
+      value: true,
+    }],
+  }).status));
 rows.push(measure("hash: 100k primitive values", () =>
   getNodeHash(largeValueTree, "large-value").length));
 rows.push(measure("clone: 100k primitive values", () =>

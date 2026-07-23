@@ -93,6 +93,20 @@ test("derived revisions include visibility and metadata while semantic no-ops pr
   assert.equal(empty.status, "applied");
   assert.equal(empty.tree.revision, "cms-rev-42");
 
+  const semanticNoOp = applyPatch(external, {
+    format: "tree-patch/v1",
+    patchId: "same-title",
+    ops: [{
+      kind: "setAttr",
+      opId: "same-title",
+      nodeId: "hero",
+      path: "/title",
+      value: "Summer Sale",
+    }],
+  });
+  assert.equal(semanticNoOp.status, "applied");
+  assert.equal(semanticNoOp.tree.revision, "cms-rev-42");
+
   const hidden = applyPatch(external, {
     format: "tree-patch/v1",
     patchId: "hide",
@@ -176,6 +190,7 @@ test("ordered child aggregates are shared for parent attrs and forked for child 
     }],
   });
   assert.equal(childEdit.status, "applied");
+  getSubtreeHash(childEdit.tree, "root");
   const childEditAggregate =
     getTreeState(childEdit.tree).cache.childHashByParentId.get("root")!;
   assert.notStrictEqual(childEditAggregate, sourceAggregate);

@@ -1880,7 +1880,6 @@ function freezeNodeForSnapshot<TTypes extends NodeTypeMap>(
 function buildSnapshotFromOverlay<TTypes extends NodeTypeMap>(
   overlay: OverlayState<TTypes>,
   source: IndexedTree<TTypes>,
-  sourceStateHash: string,
 ): IndexedTree<TTypes> {
   for (const nodeId of overlay.dirtyNodeIds) {
     const node = overlay.nodes.get(nodeId);
@@ -1928,11 +1927,25 @@ function buildSnapshotFromOverlay<TTypes extends NodeTypeMap>(
   }
 
   attachTreeState(tree, overlay);
-  const derivedRevision = getTreeRevisionHash(tree);
-  tree.revision =
-    derivedRevision === sourceStateHash && source.revision !== undefined
-      ? source.revision
-      : derivedRevision;
+  let cachedRevision: string | undefined;
+  let revisionSource: IndexedTree<TTypes> | undefined = source;
+  Object.defineProperty(tree, "revision", {
+    enumerable: true,
+    get() {
+      if (cachedRevision === undefined) {
+        const currentSource = revisionSource!;
+        const sourceStateHash = getTreeRevisionHash(currentSource);
+        const derivedRevision = getTreeRevisionHash(tree);
+        cachedRevision =
+          derivedRevision === sourceStateHash &&
+          currentSource.revision !== undefined
+            ? currentSource.revision
+            : derivedRevision;
+        revisionSource = undefined;
+      }
+      return cachedRevision;
+    },
+  });
   return Object.freeze(tree);
 }
 
@@ -2091,7 +2104,6 @@ export function executePatchInternal<TTypes extends NodeTypeMap>(
       : buildSnapshotFromOverlay(
           session.overlay,
           source,
-          getTreeRevisionHash(source),
         );
 
   return {

@@ -236,6 +236,41 @@ test("validation leaves a cold source hash cache cold", () => {
   assert.equal(source.cache.subtreeHashById.size, 0);
 });
 
+test("changed external snapshots defer revision hashing until revision is read", () => {
+  const source = createDocument<PerfTypes>({
+    revision: "external",
+    root: {
+      id: "root",
+      type: "Root",
+      attrs: { version: 1 },
+      children: Array.from({ length: 2_000 }, (_, index) => ({
+        id: `leaf-${index}`,
+        type: "Leaf",
+        attrs: {},
+        children: [],
+      })),
+    },
+  });
+  const result = applyPatch(source, {
+    format: "tree-patch/v1",
+    patchId: "lazy-revision",
+    ops: [{
+      kind: "setAttr",
+      opId: "set-version",
+      nodeId: "root",
+      path: "/version",
+      value: 2,
+    }],
+  });
+
+  assert.equal(result.status, "applied");
+  assert.equal(source.cache.subtreeHashById.size, 0);
+  assert.equal(result.tree.cache.subtreeHashById.size, 0);
+  assert.match(result.tree.revision!, /^tree:h2:/);
+  assert.ok(source.cache.subtreeHashById.size > 0);
+  assert.ok(result.tree.cache.subtreeHashById.size > 0);
+});
+
 test("apply materializes adapter values lazily and only once", () => {
   type AdapterTypes = {
     Event: { when: Date };

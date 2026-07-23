@@ -655,5 +655,6 @@ test("unrelated cached hashes survive while touched hashes are invalidated", () 
   assert.equal(result.tree.cache.nodeHashById.get("legal"), legalNodeHash);
   assert.equal(result.tree.cache.pathHashByNodeId.get("legal")?.get("/html"), legalPathHash);
   assert.notEqual(result.tree.cache.nodeHashById.get("hero"), heroNodeHash);
-  assert.equal(result.tree.cache.nodeHashById.get("hero"), getNodeHash(result.tree, "hero"));
+  const updatedHeroHash = getNodeHash(result.tree, "hero");
+  assert.equal(result.tree.cache.nodeHashById.get("hero"), updatedHeroHash);
 });
