@@ -56,8 +56,13 @@ import {
 
 An input `revision` is treated as an opaque external revision and is preserved
 when applying a patch makes no semantic change. Changed snapshots receive a
-deterministic `tree:` revision derived from content, explicit visibility,
+deterministic `tree:h2:` revision derived from content, explicit visibility,
 patch ownership, and document metadata.
+
+Content, subtree, and path hashes carry an `h2:` algorithm prefix. Hash guards
+are intentionally version-specific: a persisted guard produced by a different
+hash algorithm conflicts safely instead of being interpreted as the current
+digest.
 
 ## Quick Start
 

@@ -73,7 +73,10 @@ test("equal documents produce identical node, subtree, path hashes, and derived 
   assert.equal(getPathHash(treeA, "hero", "/image/url"), getPathHash(treeB, "hero", "/image/url"));
   assert.equal(treeA.revision, getTreeRevisionHash(treeA));
   assert.equal(treeB.revision, getTreeRevisionHash(treeB));
-  assert.match(treeA.revision!, /^tree:/);
+  assert.match(treeA.revision!, /^tree:h2:/);
+  assert.match(getNodeHash(treeA, "hero"), /^h2:/);
+  assert.match(getSubtreeHash(treeA, "root"), /^h2:/);
+  assert.match(getPathHash(treeA, "hero", "/image/url"), /^h2:/);
 });
 
 test("derived revisions include visibility and metadata while semantic no-ops preserve external revisions", () => {
@@ -103,7 +106,7 @@ test("derived revisions include visibility and metadata while semantic no-ops pr
   });
   assert.equal(hidden.status, "applied");
   assert.notEqual(hidden.tree.revision, external.revision);
-  assert.match(hidden.tree.revision!, /^tree:/);
+  assert.match(hidden.tree.revision!, /^tree:h2:/);
 
   const metadataA = createDocument<HashTypes>({
     ...createHashSource(),

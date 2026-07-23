@@ -1,12 +1,43 @@
-import type { IndexedTree, JsonPointer, NodeTypeMap } from "./types.js";
+import type {
+  IndexedTree,
+  JsonPointer,
+  JsonValue,
+  NodeTypeMap,
+} from "./types.js";
 import { ensureMutableMapValue } from "./cow.js";
 import { InvalidPointerError, UnsupportedRuntimeValueError } from "./errors.js";
 import { isPlainObject } from "./snapshot.js";
 import { getTreeState } from "./state.js";
 import { hashStableParts } from "./stable-hash.js";
 import { canonicalizeJsonValue, isJsonValue } from "../schema/adapters.js";
-import { getValueAdapterForPointer, isAtomicPointer } from "../schema/schema.js";
+import {
+  getNodeRuntimeSpec,
+  getValueAdapterForPointer,
+  isAtomicPointer,
+} from "../schema/schema.js";
 import { resolvePointer } from "../schema/pointers.js";
+
+export const HASH_VERSION = "h2";
+
+function versionHash(hash: string): string {
+  return `${HASH_VERSION}:${hash}`;
+}
+
+function canHashAsPlainJson(
+  tree: IndexedTree<NodeTypeMap>,
+  nodeType: string,
+  pointer: JsonPointer,
+): boolean {
+  const spec = getNodeRuntimeSpec(getTreeState(tree).schema, nodeType);
+  const containsPointer = (candidate: JsonPointer) =>
+    pointer === "" ||
+    candidate === pointer ||
+    candidate.startsWith(`${pointer}/`);
+  return (
+    !spec.atomicPointers.some(containsPointer) &&
+    ![...spec.adapters.keys()].some(containsPointer)
+  );
+}
 
 function hashOpaqueValue(
   value: unknown,
@@ -56,6 +87,13 @@ function hashStructuredValue(
   tree: IndexedTree<NodeTypeMap>,
 ): string {
   const state = getTreeState(tree);
+  if (canHashAsPlainJson(tree, nodeType, pointer)) {
+    return versionHash(hashStableParts([
+      "json",
+      canonicalizeJsonValue(value as JsonValue),
+    ]));
+  }
+
   type Frame =
     | { kind: "value"; value: unknown; pointer: JsonPointer }
     | {
@@ -172,7 +210,7 @@ function hashStructuredValue(
     }
   }
 
-  return hashes[0]!;
+  return versionHash(hashes[0]!);
 }
 
 function getNodeOrThrow<TTypes extends NodeTypeMap>(
@@ -226,7 +264,9 @@ export function getNodeHash<TTypes extends NodeTypeMap>(
     "",
     tree as IndexedTree<NodeTypeMap>,
   );
-  const nodeHash = hashStableParts(["node", node.id, String(node.type), attrsHash]);
+  const nodeHash = versionHash(
+    hashStableParts(["node", node.id, String(node.type), attrsHash]),
+  );
   state.cache.nodeHashById.set(nodeId, nodeHash);
   return nodeHash;
 }
@@ -252,7 +292,7 @@ export function getSubtreeHash<TTypes extends NodeTypeMap>(
     if (frame.exit) {
       state.cache.subtreeHashById.set(
         frame.nodeId,
-        hashStableParts((function* () {
+        versionHash(hashStableParts((function* () {
           yield "subtree";
           yield getNodeHash(tree, frame.nodeId);
           for (const childId of node.childIds) {
@@ -265,7 +305,7 @@ export function getSubtreeHash<TTypes extends NodeTypeMap>(
             }
             yield childHash;
           }
-        })()),
+        })())),
       );
       continue;
     }
@@ -289,7 +329,7 @@ export function getTreeRevisionHash<TTypes extends NodeTypeMap>(
   const hidden = [...state.explicitHidden].sort();
   const patchOwned = [...state.patchOwned].sort();
   const metadata = canonicalizeJsonValue(tree.metadata ?? null);
-  return `tree:${hashStableParts([
+  return `tree:${HASH_VERSION}:${hashStableParts([
     "revision",
     getSubtreeHash(tree, tree.rootId),
     hidden.join("\u0000"),
