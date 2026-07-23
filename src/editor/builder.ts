@@ -8,6 +8,7 @@ import type {
   JsonObject,
   JsonPointer,
   NodeId,
+  NonRootAttrPath,
   NodeTypeMap,
   PatchOp,
   SerializedPatchNode,
@@ -87,7 +88,7 @@ export interface NodeEditor<
     value: DeepValue<TTypes[TType], TPath>,
     options?: PatchBuilderFieldOptions<DeepValue<TTypes[TType], TPath>>,
   ): NodeEditor<TTypes, TType>;
-  remove<TPath extends AttrPath<TTypes[TType]>>(
+  remove<TPath extends NonRootAttrPath<TTypes[TType]>>(
     path: TPath,
     options?: PatchBuilderFieldOptions<DeepValue<TTypes[TType], TPath>>,
   ): NodeEditor<TTypes, TType>;

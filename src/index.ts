@@ -53,6 +53,7 @@ export type {
   MaterializedNodeState,
   MoveNodeOp,
   NodeId,
+  NonRootAttrPath,
   NodeRuntimeSpec,
   NodeTypeMap,
   PatchConflict,

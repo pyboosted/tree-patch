@@ -26,7 +26,7 @@ type TuplePath<
   TTail extends readonly (string | number)[],
 > = readonly [THead, ...TTail];
 
-type DeepPathImpl<T, TDepth extends readonly unknown[]> = TDepth["length"] extends 5
+type DeepPathImpl<T, TDepth extends readonly unknown[]> = TDepth["length"] extends 8
   ? readonly []
   : T extends readonly (infer TItem)[]
     ? readonly [] | TuplePath<number, DeepPathImpl<NonNullable<TItem>, [...TDepth, 1]>>
@@ -99,6 +99,7 @@ export interface ValueAdapter<T = unknown> {
 export type JsonPointer = `/${string}` | "";
 
 export type AttrPath<T> = DeepPath<T>;
+export type NonRootAttrPath<T> = Exclude<DeepPath<T>, readonly []>;
 
 export interface TreeNode<
   TTypes extends NodeTypeMap,

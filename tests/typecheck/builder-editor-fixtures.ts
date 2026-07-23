@@ -67,6 +67,10 @@ const builder = patchBuilder<ContentTypes>();
 builder.node("hero", "Hero").set(["title"], "Promotions");
 builder.node("hero", "Hero").set(["style", "fontSize"], 32);
 builder.node("hero", "Hero").set(["deep", "l1", "l2", "l3", "l4"], "deep value");
+builder.node("hero", "Hero").set([], {
+  title: "Whole attrs",
+  image: { url: "/whole.png" },
+});
 builder.insertNode("root", {
   id: "promo",
   type: "RichText",
@@ -81,6 +85,9 @@ editor.node("hero", "Hero").set(["image", "url"], "/img/fr.png");
 editor.node("hero", "Hero").set(["subtitle"], "Limited offer", { expectAbsent: true });
 editor.node("hero", "Hero").set(["style", "fontSize"], 28);
 editor.node("legal", "RichText").set(["html"], "<p>Updated</p>");
+
+// @ts-expect-error removing the whole attrs root is not a valid operation
+builder.node("hero", "Hero").remove([]);
 
 // @ts-expect-error root builder no longer exposes field methods
 builder.setAttr("hero", ["title"], "x");

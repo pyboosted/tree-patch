@@ -305,6 +305,11 @@ Notes:
 - adapter and codec descriptors are validated and snapshotted when the schema is compiled
 - the envelope shape `{ $codec, value }` is reserved for encoded persisted values
 
+Typed attribute paths include the empty path for replacing the complete `attrs`
+value and are inferred up to eight segments deep. Removing the complete
+attribute root is intentionally excluded because `removeAttr` requires a field
+or array element.
+
 ## Public API
 
 Main functions:
