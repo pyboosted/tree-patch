@@ -35,10 +35,15 @@ function canHashAsPlainJson(
     pointer === "" ||
     candidate === pointer ||
     candidate.startsWith(`${pointer}/`);
-  return (
-    !spec.atomicPointers.some(containsPointer) &&
-    ![...spec.adapters.keys()].some(containsPointer)
-  );
+  if (spec.atomicPointers.some(containsPointer)) {
+    return false;
+  }
+  for (const adapterPointer of spec.adapters.keys()) {
+    if (containsPointer(adapterPointer)) {
+      return false;
+    }
+  }
+  return true;
 }
 
 function hashOpaqueValue(

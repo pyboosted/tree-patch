@@ -61,7 +61,6 @@ interface DiffContext<TTypes extends NodeTypeMap> {
   readonly schemas: CompiledSchemas<TTypes>;
   readonly semanticComparisonNodeTypes: ReadonlySet<string>;
   readonly options: DiffOptions<TTypes>;
-  readonly targetPatchOwned: ReadonlySet<NodeId>;
   readonly replacementRoots: ReadonlySet<NodeId>;
   readonly replacementCoveredInBase: ReadonlySet<NodeId>;
   readonly replacementCoveredInTarget: ReadonlySet<NodeId>;
@@ -106,6 +105,16 @@ function hasSameTreeStructure<TTypes extends NodeTypeMap>(
     }
   }
   return true;
+}
+
+function setsEqual<TValue>(
+  left: ReadonlySet<TValue>,
+  right: ReadonlySet<TValue>,
+): boolean {
+  return (
+    left.size === right.size &&
+    [...left].every((value) => right.has(value))
+  );
 }
 
 function createOpIdFactory() {
@@ -952,6 +961,7 @@ function collectReplacementRoots<TTypes extends NodeTypeMap>(
   options: DiffOptions<TTypes>,
   schemas: CompiledSchemas<TTypes>,
   targetPatchOwned: ReadonlySet<NodeId>,
+  skipOwnershipMoveValidation: boolean,
 ): ReadonlySet<NodeId> {
   const baseState = getTreeState(base);
   const candidates = new Set<NodeId>();
@@ -968,53 +978,57 @@ function collectReplacementRoots<TTypes extends NodeTypeMap>(
     }
   }
 
-  for (const [nodeId] of target.nodes) {
-    if (!base.nodes.has(nodeId) || baseState.patchOwned.has(nodeId)) {
-      continue;
-    }
-
-    const targetParentId = target.index.parentById.get(nodeId);
-    if (targetParentId != null && targetPatchOwned.has(targetParentId)) {
-      const fallbackRoot = findNearestViableReplacementRoot(base, target, baseState.patchOwned, nodeId);
-      if (!fallbackRoot || options.unsupportedTransformPolicy === "error") {
-        throw new UnsupportedTransformError(
-          `Target shape for node "${nodeId}" requires moving a source-backed node under patch-owned parent "${targetParentId}".`,
-          {
-            details: { nodeId, parentId: targetParentId },
-          },
-        );
+  if (!skipOwnershipMoveValidation) {
+    for (const [nodeId] of target.nodes) {
+      if (!base.nodes.has(nodeId) || baseState.patchOwned.has(nodeId)) {
+        continue;
       }
 
-      candidates.add(fallbackRoot);
+      const targetParentId = target.index.parentById.get(nodeId);
+      if (targetParentId != null && targetPatchOwned.has(targetParentId)) {
+        const fallbackRoot = findNearestViableReplacementRoot(base, target, baseState.patchOwned, nodeId);
+        if (!fallbackRoot || options.unsupportedTransformPolicy === "error") {
+          throw new UnsupportedTransformError(
+            `Target shape for node "${nodeId}" requires moving a source-backed node under patch-owned parent "${targetParentId}".`,
+            {
+              details: { nodeId, parentId: targetParentId },
+            },
+          );
+        }
+
+        candidates.add(fallbackRoot);
+      }
     }
   }
 
-  for (const [nodeId] of base.nodes) {
-    const targetNode = target.nodes.get(nodeId);
-    if (!targetNode || candidates.has(nodeId)) {
-      continue;
-    }
+  if (options.replaceSubtreeWhen !== undefined) {
+    for (const [nodeId] of base.nodes) {
+      const targetNode = target.nodes.get(nodeId);
+      if (!targetNode || candidates.has(nodeId)) {
+        continue;
+      }
 
-    const baseParentId = base.index.parentById.get(nodeId) ?? null;
-    const targetParentId = target.index.parentById.get(nodeId) ?? null;
-    const basePosition = base.index.positionById.get(nodeId) ?? 0;
-    const targetPosition = target.index.positionById.get(nodeId) ?? 0;
+      const baseParentId = base.index.parentById.get(nodeId) ?? null;
+      const targetParentId = target.index.parentById.get(nodeId) ?? null;
+      const basePosition = base.index.positionById.get(nodeId) ?? 0;
+      const targetPosition = target.index.positionById.get(nodeId) ?? 0;
 
-    if (baseParentId !== targetParentId || basePosition !== targetPosition) {
-      continue;
-    }
+      if (baseParentId !== targetParentId || basePosition !== targetPosition) {
+        continue;
+      }
 
-    if (
-      shouldReplaceSubtreeByThresholds(
-        base,
-        target,
-        schemas,
-        nodeId,
-        options,
-        precomputedThresholds,
-      )
-    ) {
-      candidates.add(nodeId);
+      if (
+        shouldReplaceSubtreeByThresholds(
+          base,
+          target,
+          schemas,
+          nodeId,
+          options,
+          precomputedThresholds,
+        )
+      ) {
+        candidates.add(nodeId);
+      }
     }
   }
 
@@ -1695,8 +1709,23 @@ export function diffTrees<TTypes extends NodeTypeMap>(
     };
   }
 
-  const targetPatchOwned = getEffectivePatchOwnedSet(base, target);
-  const replacementRoots = collectReplacementRoots(base, target, options, schemas, targetPatchOwned);
+  const sameStructure = hasSameTreeStructure(base, target);
+  const samePatchOwnership = setsEqual(
+    getTreeState(base).patchOwned,
+    getTreeState(target).patchOwned,
+  );
+  const skipOwnershipMoveValidation = sameStructure && samePatchOwnership;
+  const targetPatchOwned = skipOwnershipMoveValidation
+    ? new Set<NodeId>()
+    : getEffectivePatchOwnedSet(base, target);
+  const replacementRoots = collectReplacementRoots(
+    base,
+    target,
+    options,
+    schemas,
+    targetPatchOwned,
+    skipOwnershipMoveValidation,
+  );
   const replacementCoveredInBase = collectNodesCoveredByRoots(base, replacementRoots);
   const replacementCoveredInTarget = collectNodesCoveredByRoots(target, replacementRoots);
   const context: DiffContext<TTypes> = {
@@ -1707,14 +1736,12 @@ export function diffTrees<TTypes extends NodeTypeMap>(
     schemas,
     semanticComparisonNodeTypes: getSemanticComparisonNodeTypes(schemas),
     options,
-    targetPatchOwned,
     replacementRoots,
     replacementCoveredInBase,
     replacementCoveredInTarget,
     opIds: createOpIdFactory(),
   };
 
-  const sameStructure = hasSameTreeStructure(base, target);
   const planning = sameStructure
     ? undefined
     : buildPlanningState(base, target);
@@ -1724,7 +1751,10 @@ export function diffTrees<TTypes extends NodeTypeMap>(
   const attrOps = collectAttrOps(context);
   const replacements = collectReplacementOps(context);
   const replacementInserts = collectReplacementInsertOps(context);
-  const visibility = collectVisibilityOps(context);
+  const visibility =
+    sameStructure && baseHiddenSignature === targetHiddenSignature
+      ? []
+      : collectVisibilityOps(context);
   const removals = sameStructure ? [] : collectRemoveOps(context);
 
   return {
