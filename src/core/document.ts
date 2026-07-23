@@ -18,7 +18,7 @@ import {
   isPlainObject,
 } from "./snapshot.js";
 import { attachTreeState } from "./state.js";
-import { getSubtreeHash } from "./hash.js";
+import { getTreeRevisionHash } from "./hash.js";
 import type { CompiledTreeSchema } from "../schema/schema.js";
 import { compileTreeSchema } from "../schema/schema.js";
 import {
@@ -232,8 +232,8 @@ export function createDocument<TTypes extends NodeTypeMap>(
     patchOwned: new Set(),
   });
 
-  if (!tree.revision) {
-    tree.revision = getSubtreeHash(tree, rootId);
+  if (tree.revision === undefined) {
+    tree.revision = getTreeRevisionHash(tree);
   }
 
   return Object.freeze(tree);

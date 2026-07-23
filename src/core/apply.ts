@@ -33,7 +33,12 @@ import {
   setOwnEnumerableValue,
 } from "./snapshot.js";
 import { attachTreeState } from "./state.js";
-import { getPathHash, getSubtreeHash, joinJsonPointer } from "./hash.js";
+import {
+  getPathHash,
+  getSubtreeHash,
+  getTreeRevisionHash,
+  joinJsonPointer,
+} from "./hash.js";
 import {
   cloneJsonValue,
   cloneRuntimeValue,
@@ -1394,6 +1399,8 @@ function freezeNodeForSnapshot<TTypes extends NodeTypeMap>(
 
 function buildSnapshotFromOverlay<TTypes extends NodeTypeMap>(
   overlay: OverlayState<TTypes>,
+  source: IndexedTree<TTypes>,
+  sourceStateHash: string,
 ): IndexedTree<TTypes> {
   const frozenNodes = new Map<NodeId, IndexedNode<TTypes>>();
   for (const [nodeId, node] of overlay.nodes) {
@@ -1441,7 +1448,11 @@ function buildSnapshotFromOverlay<TTypes extends NodeTypeMap>(
   }
 
   attachTreeState(tree, overlay);
-  tree.revision = getSubtreeHash(tree, overlay.rootId);
+  const derivedRevision = getTreeRevisionHash(tree);
+  tree.revision =
+    derivedRevision === sourceStateHash && source.revision !== undefined
+      ? source.revision
+      : derivedRevision;
   return Object.freeze(tree);
 }
 
@@ -1505,6 +1516,7 @@ export function executePatchInternal<TTypes extends NodeTypeMap>(
 ): ExecutePatchInternalResult<TTypes> {
   assertPatchEnvelope(patch);
 
+  const sourceStateHash = getTreeRevisionHash(source);
   const session = createPatchExecutionSession(source);
   const conflicts: PatchConflict[] = [];
   const appliedOps: PatchOp[] = [];
@@ -1531,7 +1543,7 @@ export function executePatchInternal<TTypes extends NodeTypeMap>(
     return { revision, conflicts, appliedOps, appliedOpIds, skippedOpIds };
   }
 
-  const tree = buildSnapshotFromOverlay(session.overlay);
+  const tree = buildSnapshotFromOverlay(session.overlay, source, sourceStateHash);
   const materialized = buildMaterializedTree(
     session.overlay,
     session.overlay.rootId,

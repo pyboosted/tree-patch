@@ -54,6 +54,11 @@ import {
 - `MaterializedNode`: nested output after applying a patch
 - `TreeSchema`: runtime adapters and codecs for non-trivial attribute values
 
+An input `revision` is treated as an opaque external revision and is preserved
+when applying a patch makes no semantic change. Changed snapshots receive a
+deterministic `tree:` revision derived from content, explicit visibility,
+patch ownership, and document metadata.
+
 ## Quick Start
 
 ```ts

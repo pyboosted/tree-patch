@@ -172,6 +172,22 @@ export function getSubtreeHash<TTypes extends NodeTypeMap>(
   return subtreeHash;
 }
 
+export function getTreeRevisionHash<TTypes extends NodeTypeMap>(
+  tree: IndexedTree<TTypes>,
+): string {
+  const state = getTreeState(tree);
+  const hidden = [...state.explicitHidden].sort();
+  const patchOwned = [...state.patchOwned].sort();
+  const metadata = canonicalizeJsonValue(tree.metadata ?? null);
+  return `tree:${hashStableParts([
+    "revision",
+    getSubtreeHash(tree, tree.rootId),
+    hidden.join("\u0000"),
+    patchOwned.join("\u0000"),
+    metadata,
+  ])}`;
+}
+
 export function getPathHash<TTypes extends NodeTypeMap>(
   tree: IndexedTree<TTypes>,
   nodeId: string,

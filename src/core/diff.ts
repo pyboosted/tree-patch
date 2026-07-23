@@ -20,9 +20,18 @@ import type {
   ShowNodeOp,
   TreePatch,
 } from "./types.js";
-import { UnsupportedTransformError } from "./errors.js";
+import {
+  InvalidResolutionInputError,
+  UnsupportedTransformError,
+} from "./errors.js";
 import { executePatchInternal } from "./apply.js";
-import { getNodeHash, getPathHash, getSubtreeHash, joinJsonPointer } from "./hash.js";
+import {
+  getNodeHash,
+  getPathHash,
+  getSubtreeHash,
+  getTreeRevisionHash,
+  joinJsonPointer,
+} from "./hash.js";
 import { getTreeState } from "./state.js";
 import { isPlainObject } from "./snapshot.js";
 import type { CompiledTreeSchema } from "../schema/schema.js";
@@ -40,6 +49,7 @@ import {
 } from "../schema/runtime-values.js";
 import { hashStableParts } from "./stable-hash.js";
 import { cloneJsonValue } from "../schema/adapters.js";
+import { compareStrings } from "./order.js";
 
 interface DiffContext<TTypes extends NodeTypeMap> {
   readonly base: IndexedTree<TTypes>;
@@ -137,10 +147,8 @@ function buildPatchId<TTypes extends NodeTypeMap>(
   target: IndexedTree<TTypes>,
 ): string {
   return `diff:${hashStableParts([
-    getSubtreeHash(base, base.rootId),
-    collectExplicitHiddenSignature(base),
-    getSubtreeHash(target, target.rootId),
-    collectExplicitHiddenSignature(target),
+    getTreeRevisionHash(base),
+    getTreeRevisionHash(target),
   ])}`;
 }
 
@@ -193,7 +201,7 @@ function collapseReplacementRoots<TTypes extends NodeTypeMap>(
 ): ReadonlySet<NodeId> {
   const sorted = [...candidates].sort((left, right) => {
     const depthDiff = (target.index.depthById.get(left) ?? 0) - (target.index.depthById.get(right) ?? 0);
-    return depthDiff === 0 ? left.localeCompare(right) : depthDiff;
+    return depthDiff === 0 ? compareStrings(left, right) : depthDiff;
   });
 
   const collapsed = new Set<NodeId>();
@@ -1024,9 +1032,9 @@ function collectAttrOps<TTypes extends NodeTypeMap>(
 
   return ops.sort((left, right) => {
     if (left.nodeId !== right.nodeId) {
-      return left.nodeId.localeCompare(right.nodeId);
+      return compareStrings(left.nodeId, right.nodeId);
     }
-    return left.path.localeCompare(right.path);
+    return compareStrings(left.path, right.path);
   });
 }
 
@@ -1036,7 +1044,7 @@ function collectReplacementOps<TTypes extends NodeTypeMap>(
   return [...context.replacementRoots]
     .sort((left, right) => {
       const depthDiff = (context.target.index.depthById.get(left) ?? 0) - (context.target.index.depthById.get(right) ?? 0);
-      return depthDiff === 0 ? left.localeCompare(right) : depthDiff;
+      return depthDiff === 0 ? compareStrings(left, right) : depthDiff;
     })
     .map((nodeId) => ({
       kind: "replaceSubtree" as const,
@@ -1111,7 +1119,7 @@ function collectReplacementInsertOps<TTypes extends NodeTypeMap>(
   [...context.replacementRoots]
     .sort((left, right) => {
       const depthDiff = (context.target.index.depthById.get(left) ?? 0) - (context.target.index.depthById.get(right) ?? 0);
-      return depthDiff === 0 ? left.localeCompare(right) : depthDiff;
+      return depthDiff === 0 ? compareStrings(left, right) : depthDiff;
     })
     .forEach((replacementRootId) => {
       visitReplacementRoot(replacementRootId);
@@ -1175,7 +1183,7 @@ function collectVisibilityOps<TTypes extends NodeTypeMap>(
     })
     .sort((left, right) => {
       const depthDiff = (context.base.index.depthById.get(left) ?? 0) - (context.base.index.depthById.get(right) ?? 0);
-      return depthDiff === 0 ? left.localeCompare(right) : depthDiff;
+      return depthDiff === 0 ? compareStrings(left, right) : depthDiff;
     });
 
   for (const nodeId of missingSourceBackedRoots) {
@@ -1221,7 +1229,7 @@ function collectRemoveOps<TTypes extends NodeTypeMap>(context: DiffContext<TType
     })
     .sort((left, right) => {
       const depthDiff = (context.base.index.depthById.get(right) ?? 0) - (context.base.index.depthById.get(left) ?? 0);
-      return depthDiff === 0 ? left.localeCompare(right) : depthDiff;
+      return depthDiff === 0 ? compareStrings(left, right) : depthDiff;
     });
 
   return roots.map((nodeId) => ({
@@ -1297,11 +1305,32 @@ export function diffTrees<TTypes extends NodeTypeMap>(
 }
 
 export function rebasePatch<TTypes extends NodeTypeMap>(
-  _oldBase: IndexedTree<TTypes>,
+  oldBase: IndexedTree<TTypes>,
   newBase: IndexedTree<TTypes>,
   patch: TreePatch,
   options: RebaseOptions = {},
 ): RebaseResult<TTypes> {
+  const sourceValidation = executePatchInternal(oldBase, patch, {
+    mode: "preview",
+    includeHidden: options.includeHidden ?? true,
+    produceTree: false,
+  });
+  if (
+    sourceValidation.conflicts.length > 0 ||
+    sourceValidation.revision.status === "mismatch"
+  ) {
+    throw new InvalidResolutionInputError(
+      `Rebase requires a patch that applies cleanly to its original base; patch "${patch.patchId}" does not match the provided old base.`,
+      {
+        details: {
+          patchId: patch.patchId,
+          revision: sourceValidation.revision,
+          conflicts: sourceValidation.conflicts,
+        },
+      },
+    );
+  }
+
   const execution = executePatchInternal(newBase, patch, {
     mode: "preview",
     includeHidden: options.includeHidden ?? true,

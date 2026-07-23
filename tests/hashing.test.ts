@@ -2,8 +2,13 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 
-import { createDocument } from "../src/index.js";
-import { getNodeHash, getPathHash, getSubtreeHash } from "../src/core/hash.js";
+import { applyPatch, createDocument } from "../src/index.js";
+import {
+  getNodeHash,
+  getPathHash,
+  getSubtreeHash,
+  getTreeRevisionHash,
+} from "../src/core/hash.js";
 
 type HashTypes = {
   Page: {};
@@ -66,8 +71,49 @@ test("equal documents produce identical node, subtree, path hashes, and derived 
   assert.equal(getNodeHash(treeA, "hero"), getNodeHash(treeB, "hero"));
   assert.equal(getSubtreeHash(treeA, "root"), getSubtreeHash(treeB, "root"));
   assert.equal(getPathHash(treeA, "hero", "/image/url"), getPathHash(treeB, "hero", "/image/url"));
-  assert.equal(treeA.revision, getSubtreeHash(treeA, "root"));
-  assert.equal(treeB.revision, getSubtreeHash(treeB, "root"));
+  assert.equal(treeA.revision, getTreeRevisionHash(treeA));
+  assert.equal(treeB.revision, getTreeRevisionHash(treeB));
+  assert.match(treeA.revision!, /^tree:/);
+});
+
+test("derived revisions include visibility and metadata while semantic no-ops preserve external revisions", () => {
+  const external = createDocument<HashTypes>({
+    ...createHashSource(),
+    revision: "cms-rev-42",
+  });
+  const empty = applyPatch(external, {
+    format: "tree-patch/v1",
+    patchId: "empty",
+    ops: [],
+  });
+  assert.equal(empty.status, "applied");
+  assert.equal(empty.tree.revision, "cms-rev-42");
+
+  const hidden = applyPatch(external, {
+    format: "tree-patch/v1",
+    patchId: "hide",
+    baseRevision: "cms-rev-42",
+    ops: [
+      {
+        kind: "hideNode",
+        opId: "hide-hero",
+        nodeId: "hero",
+      },
+    ],
+  });
+  assert.equal(hidden.status, "applied");
+  assert.notEqual(hidden.tree.revision, external.revision);
+  assert.match(hidden.tree.revision!, /^tree:/);
+
+  const metadataA = createDocument<HashTypes>({
+    ...createHashSource(),
+    metadata: { locale: "en" },
+  });
+  const metadataB = createDocument<HashTypes>({
+    ...createHashSource(),
+    metadata: { locale: "fr" },
+  });
+  assert.notEqual(metadataA.revision, metadataB.revision);
 });
 
 test("atomic schema paths are opaque but still change hashes when inner data changes", () => {
@@ -97,4 +143,5 @@ test("portable hashing no longer depends on node crypto runtime imports", () => 
 
   assert.doesNotMatch(hashSource, /node:crypto|createHash\(/);
   assert.doesNotMatch(diffSource, /node:crypto|createHash\(/);
+  assert.doesNotMatch(diffSource, /localeCompare\(/);
 });

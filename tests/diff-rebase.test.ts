@@ -5,6 +5,7 @@ import {
   applyPatch,
   createDocument,
   diffTrees,
+  InvalidResolutionInputError,
   materialize,
   MissingCodecError,
   rebasePatch,
@@ -597,4 +598,45 @@ test("rebasePatch keeps successful ops, skips conflicts, and updates baseRevisio
   assert.ok(rebased.preview);
   assert.equal(rebased.preview?.nodes.get("hero")?.attrs.title, "Spring Sale");
   assert.equal(rebased.preview?.nodes.get("legal")?.attrs.html, "<p>EU only</p>");
+});
+
+test("rebasePatch rejects a patch that does not belong to the supplied old base", () => {
+  const oldBase = createTree(createBaseDocument("rev-1"));
+  const localDocument = createBaseDocument("rev-1");
+  localDocument.root.children[0]!.attrs.title = "Local";
+  const patch = diffTrees(oldBase, createTree(localDocument));
+
+  const wrongOldBaseDocument = createBaseDocument("rev-1");
+  wrongOldBaseDocument.root.children[0]!.attrs.title = "Different";
+  const wrongOldBase = createTree(wrongOldBaseDocument);
+  const newBase = createTree(createBaseDocument("rev-2"));
+
+  assert.throws(
+    () => rebasePatch(wrongOldBase, newBase, patch),
+    InvalidResolutionInputError,
+  );
+});
+
+test("diff operation ordering uses locale-independent code-unit order", () => {
+  type OrderedTypes = {
+    Ordered: {
+      z: number;
+      ä: number;
+    };
+  };
+  const makeTree = (z: number, ä: number) =>
+    createDocument<OrderedTypes>({
+      root: {
+        id: "root",
+        type: "Ordered",
+        attrs: { z, ä },
+        children: [],
+      },
+    });
+
+  const patch = diffTrees(makeTree(0, 0), makeTree(1, 1));
+  assert.deepEqual(
+    patch.ops.map((op) => ("path" in op ? op.path : "")),
+    ["/z", "/ä"],
+  );
 });
