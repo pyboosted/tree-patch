@@ -234,7 +234,6 @@ class ConflictResolutionSessionController<TTypes extends NodeTypeMap>
 
     const execution = executePatchInternal(this.newBase, replayPatch, {
       mode: "preview",
-      includeHidden: this.includeHidden,
       produceTree: true,
     });
 

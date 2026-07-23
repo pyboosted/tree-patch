@@ -1640,7 +1640,6 @@ export function rebasePatch<TTypes extends NodeTypeMap>(
 ): RebaseResult<TTypes> {
   const sourceValidation = executePatchInternal(oldBase, patch, {
     mode: "preview",
-    includeHidden: options.includeHidden ?? true,
     produceTree: false,
   });
   if (
@@ -1661,7 +1660,6 @@ export function rebasePatch<TTypes extends NodeTypeMap>(
 
   const execution = executePatchInternal(newBase, patch, {
     mode: "preview",
-    includeHidden: options.includeHidden ?? true,
     produceTree: true,
   });
 

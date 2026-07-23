@@ -24,7 +24,7 @@ import type {
   ValidateOptions,
   ValidationResult,
 } from "./types.js";
-import { materializeMap, materializeSet } from "./cow.js";
+import { finalizeMap, finalizeSet } from "./cow.js";
 import { InvalidPointerError, MissingCodecError } from "./errors.js";
 import {
   createReadonlyMapView,
@@ -32,7 +32,7 @@ import {
   isPlainObject,
   setOwnEnumerableValue,
 } from "./snapshot.js";
-import { attachTreeState } from "./state.js";
+import { attachTreeState, getTreeState } from "./state.js";
 import {
   getPathHash,
   getSubtreeHash,
@@ -103,7 +103,6 @@ export interface ExecutePatchInternalResult<TTypes extends NodeTypeMap> {
   appliedOpIds: string[];
   skippedOpIds: string[];
   tree?: IndexedTree<TTypes>;
-  materialized?: MaterializedNode<TTypes>;
 }
 
 function toConflict(
@@ -1370,6 +1369,7 @@ function applyInsertNode<TTypes extends NodeTypeMap>(
 
   normalized.nodes.forEach((node) => {
     setNode(context.overlay, node);
+    context.overlay.dirtyNodeIds.add(node.id);
     context.overlay.patchOwned.add(node.id);
   });
 
@@ -1614,6 +1614,7 @@ function applyReplaceSubtree<TTypes extends NodeTypeMap>(
 
   normalized.nodes.forEach((node) => {
     setNode(overlay, node);
+    overlay.dirtyNodeIds.add(node.id);
     if (node.id === op.nodeId) {
       if (rootWasPatchOwned) {
         overlay.patchOwned.add(node.id);
@@ -1770,25 +1771,22 @@ function buildSnapshotFromOverlay<TTypes extends NodeTypeMap>(
   source: IndexedTree<TTypes>,
   sourceStateHash: string,
 ): IndexedTree<TTypes> {
-  const frozenNodes = new Map<NodeId, IndexedNode<TTypes>>();
-  for (const [nodeId, node] of overlay.nodes) {
-    frozenNodes.set(nodeId, freezeNodeForSnapshot(overlay, node));
+  for (const nodeId of overlay.dirtyNodeIds) {
+    const node = overlay.nodes.get(nodeId);
+    if (node) {
+      overlay.nodes.set(nodeId, freezeNodeForSnapshot(overlay, node));
+    }
   }
 
-  const pathHashByNodeId = new Map<NodeId, Map<JsonPointer, string>>();
-  for (const [nodeId, hashes] of overlay.cache.pathHashByNodeId) {
-    pathHashByNodeId.set(nodeId, materializeMap(hashes));
-  }
-
-  overlay.nodes = frozenNodes;
-  overlay.index.parentById = materializeMap(overlay.index.parentById);
-  overlay.index.positionById = materializeMap(overlay.index.positionById);
-  overlay.index.depthById = materializeMap(overlay.index.depthById);
-  overlay.cache.nodeHashById = materializeMap(overlay.cache.nodeHashById);
-  overlay.cache.subtreeHashById = materializeMap(overlay.cache.subtreeHashById);
-  overlay.cache.pathHashByNodeId = pathHashByNodeId;
-  overlay.explicitHidden = materializeSet(overlay.explicitHidden);
-  overlay.patchOwned = materializeSet(overlay.patchOwned);
+  overlay.nodes = finalizeMap(overlay.nodes);
+  overlay.index.parentById = finalizeMap(overlay.index.parentById);
+  overlay.index.positionById = finalizeMap(overlay.index.positionById);
+  overlay.index.depthById = finalizeMap(overlay.index.depthById);
+  overlay.cache.nodeHashById = finalizeMap(overlay.cache.nodeHashById);
+  overlay.cache.subtreeHashById = finalizeMap(overlay.cache.subtreeHashById);
+  overlay.cache.pathHashByNodeId = finalizeMap(overlay.cache.pathHashByNodeId);
+  overlay.explicitHidden = finalizeSet(overlay.explicitHidden);
+  overlay.patchOwned = finalizeSet(overlay.patchOwned);
 
   const tree = {
     rootId: overlay.rootId,
@@ -1825,11 +1823,12 @@ function buildSnapshotFromOverlay<TTypes extends NodeTypeMap>(
 }
 
 function buildMaterializedTree<TTypes extends NodeTypeMap>(
-  overlay: OverlayState<TTypes>,
+  tree: IndexedTree<TTypes>,
   nodeId: NodeId,
   includeHidden: boolean,
   ancestorHidden: boolean,
 ): MaterializedNode<TTypes> | null {
+  const state = getTreeState(tree);
   let root: MaterializedNode<TTypes> | null = null;
   type Frame =
     | {
@@ -1858,23 +1857,23 @@ function buildMaterializedTree<TTypes extends NodeTypeMap>(
   while (stack.length > 0) {
     const frame = stack.pop()!;
     if (frame.kind === "exit") {
-      const state: MaterializedNode<TTypes>["state"] = {};
+      const materializedState: MaterializedNode<TTypes>["state"] = {};
       if (frame.hidden) {
-        state.hidden = true;
+        materializedState.hidden = true;
       }
-      if (overlay.patchOwned.has(frame.node.id)) {
-        state.patchOwned = true;
+      if (state.patchOwned.has(frame.node.id)) {
+        materializedState.patchOwned = true;
       }
       if (frame.explicitlyHidden) {
-        state.explicitlyHidden = true;
+        materializedState.explicitlyHidden = true;
       }
 
       const materialized: MaterializedNode<TTypes> = {
         id: frame.node.id,
         type: frame.node.type,
         attrs: exposeRuntimeAttrs(
-          overlay.schema,
-          overlay.ownership,
+          state.schema,
+          state.ownership,
           String(frame.node.type),
           frame.node.attrs,
         ) as MaterializedNode<TTypes>["attrs"],
@@ -1882,19 +1881,19 @@ function buildMaterializedTree<TTypes extends NodeTypeMap>(
           (child): child is MaterializedNode<TTypes> => child !== null,
         ),
       };
-      if (Object.keys(state).length > 0) {
-        materialized.state = state;
+      if (Object.keys(materializedState).length > 0) {
+        materialized.state = materializedState;
       }
       frame.assign(materialized);
       continue;
     }
 
-    const node = overlay.nodes.get(frame.nodeId);
+    const node = state.nodes.get(frame.nodeId);
     if (!node) {
       frame.assign(null);
       continue;
     }
-    const explicitlyHidden = overlay.explicitHidden.has(frame.nodeId);
+    const explicitlyHidden = state.explicitHidden.has(frame.nodeId);
     const hidden = frame.ancestorHidden || explicitlyHidden;
     if (hidden && !includeHidden) {
       frame.assign(null);
@@ -1932,13 +1931,11 @@ export function executePatchInternal<TTypes extends NodeTypeMap>(
   patch: TreePatch,
   options: {
     mode: "atomic" | "preview";
-    includeHidden: boolean;
     produceTree: boolean;
   },
 ): ExecutePatchInternalResult<TTypes> {
   assertPatchEnvelope(patch);
 
-  const sourceStateHash = getTreeRevisionHash(source);
   const session = createPatchExecutionSession(source);
   const context: ExecutionContext<TTypes> = {
     overlay: session.overlay,
@@ -1974,13 +1971,11 @@ export function executePatchInternal<TTypes extends NodeTypeMap>(
   const tree =
     appliedOps.length === 0
       ? source
-      : buildSnapshotFromOverlay(session.overlay, source, sourceStateHash);
-  const materialized = buildMaterializedTree(
-    session.overlay,
-    session.overlay.rootId,
-    options.includeHidden,
-    false,
-  ) as MaterializedNode<TTypes>;
+      : buildSnapshotFromOverlay(
+          session.overlay,
+          source,
+          getTreeRevisionHash(source),
+        );
 
   return {
     revision,
@@ -1989,8 +1984,31 @@ export function executePatchInternal<TTypes extends NodeTypeMap>(
     appliedOpIds,
     skippedOpIds,
     tree,
-    materialized,
   };
+}
+
+function withLazyMaterialized<
+  TTypes extends NodeTypeMap,
+  TResult extends object,
+>(
+  result: TResult,
+  tree: IndexedTree<TTypes>,
+  includeHidden: boolean,
+): TResult & { readonly materialized: MaterializedNode<TTypes> } {
+  let cached: MaterializedNode<TTypes> | undefined;
+  Object.defineProperty(result, "materialized", {
+    enumerable: true,
+    get() {
+      cached ??= buildMaterializedTree(
+        tree,
+        tree.rootId,
+        includeHidden,
+        false,
+      ) as MaterializedNode<TTypes>;
+      return cached;
+    },
+  });
+  return result as TResult & { readonly materialized: MaterializedNode<TTypes> };
 }
 
 export function validatePatch<TTypes extends NodeTypeMap>(
@@ -2000,7 +2018,6 @@ export function validatePatch<TTypes extends NodeTypeMap>(
 ): ValidationResult {
   const result = executePatchInternal(source, patch, {
     mode: options.mode ?? "atomic",
-    includeHidden: true,
     produceTree: false,
   });
 
@@ -2023,9 +2040,9 @@ export function applyPatch<TTypes extends NodeTypeMap>(
   patch: TreePatch,
   options: ApplyOptions = {},
 ): ApplyResult<TTypes> {
+  const includeHidden = options.includeHidden ?? true;
   const result = executePatchInternal(source, patch, {
     mode: options.mode ?? "atomic",
-    includeHidden: options.includeHidden ?? true,
     produceTree: true,
   });
 
@@ -2038,21 +2055,19 @@ export function applyPatch<TTypes extends NodeTypeMap>(
   }
 
   if (result.conflicts.length > 0) {
-    return {
+    return withLazyMaterialized({
       status: "preview",
       revision: result.revision,
       tree: result.tree as IndexedTree<TTypes>,
-      materialized: result.materialized as MaterializedNode<TTypes>,
       conflicts: result.conflicts,
-    };
+    }, result.tree as IndexedTree<TTypes>, includeHidden);
   }
 
-  return {
+  return withLazyMaterialized({
     status: "applied",
     revision: result.revision,
     tree: result.tree as IndexedTree<TTypes>,
-    materialized: result.materialized as MaterializedNode<TTypes>,
-  };
+  }, result.tree as IndexedTree<TTypes>, includeHidden);
 }
 
 export function materialize<TTypes extends NodeTypeMap>(

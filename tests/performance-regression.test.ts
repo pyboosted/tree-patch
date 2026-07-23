@@ -7,6 +7,8 @@ import {
   createEditor,
   createResolutionSession,
   diffTrees,
+  type TreeSchema,
+  validatePatch,
 } from "../src/index.js";
 import { getPathHash } from "../src/core/hash.js";
 
@@ -203,4 +205,103 @@ test("editor move sequences retain sibling planning state until build", () => {
   assert.equal(result.status, "applied");
   assert.equal(result.tree.nodes.get("root")?.childIds[0], `leaf-${size - 1}`);
   assert.equal(result.tree.nodes.get("root")?.childIds.at(-1), "leaf-0");
+});
+
+test("validation leaves a cold source hash cache cold", () => {
+  const source = createDocument<PerfTypes>({
+    revision: "external",
+    root: {
+      id: "root",
+      type: "Root",
+      attrs: { version: 1 },
+      children: Array.from({ length: 2_000 }, (_, index) => ({
+        id: `leaf-${index}`,
+        type: "Leaf",
+        attrs: {},
+        children: [],
+      })),
+    },
+  });
+  assert.equal(source.cache.subtreeHashById.size, 0);
+
+  const result = validatePatch(source, {
+    format: "tree-patch/v1",
+    patchId: "validate-cold",
+    ops: [],
+  });
+
+  assert.equal(result.status, "valid");
+  assert.equal(source.cache.subtreeHashById.size, 0);
+});
+
+test("apply materializes adapter values lazily and only once", () => {
+  type AdapterTypes = {
+    Event: { when: Date };
+  };
+  let cloneCount = 0;
+  const schema = {
+    types: {
+      Event: {
+        adapters: {
+          "/when": {
+            equals: (left: Date, right: Date) =>
+              left.getTime() === right.getTime(),
+            hash: (value: Date) => value.toISOString(),
+            clone: (value: Date) => {
+              cloneCount += 1;
+              return new Date(value.getTime());
+            },
+          },
+        },
+      },
+    },
+  } satisfies TreeSchema<AdapterTypes>;
+  const source = createDocument<AdapterTypes>({
+    root: {
+      id: "event",
+      type: "Event",
+      attrs: { when: new Date("2026-07-23T00:00:00.000Z") },
+      children: [],
+    },
+  }, { schema });
+  cloneCount = 0;
+
+  const result = applyPatch(source, {
+    format: "tree-patch/v1",
+    patchId: "lazy-materialized",
+    ops: [],
+  });
+  assert.equal(result.status, "applied");
+  assert.equal(cloneCount, 0);
+
+  const first = result.materialized;
+  const clonesAfterFirstRead = cloneCount;
+  assert.ok(clonesAfterFirstRead > 0);
+  assert.strictEqual(result.materialized, first);
+  assert.equal(cloneCount, clonesAfterFirstRead);
+});
+
+test("successive sparse snapshots compact persistent layers transparently", () => {
+  const original = createWideTree(1_000, 0);
+  let current = original;
+
+  for (let version = 1; version <= 20; version += 1) {
+    const result = applyPatch(current, {
+      format: "tree-patch/v1",
+      patchId: `sparse-${version}`,
+      ops: [{
+        kind: "setAttr",
+        opId: `set-${version}`,
+        nodeId: "root",
+        path: "/version",
+        value: version,
+      }],
+    });
+    assert.equal(result.status, "applied");
+    current = result.tree;
+  }
+
+  assert.equal(current.nodes.size, 1_001);
+  assert.equal(current.nodes.get("root")?.attrs.version, 20);
+  assert.equal(original.nodes.get("root")?.attrs.version, 0);
 });

@@ -42,3 +42,17 @@ test("copy-on-write sets keep the base untouched across adds and deletes", () =>
   assert.deepEqual([...overlay], ["hero", "promo"]);
   assert.deepEqual([...materializeSet(overlay)], ["hero", "promo"]);
 });
+
+test("copy-on-write tombstones isolate cache keys added to a live base later", () => {
+  const base = new Map<string, number>([["stable", 1]]);
+  const overlay = createCopyOnWriteMap(base);
+
+  assert.equal(overlay.delete("late"), false);
+  base.set("late", 2);
+  base.set("visible", 3);
+
+  assert.equal(overlay.has("late"), false);
+  assert.equal(overlay.get("visible"), 3);
+  assert.equal(overlay.size, 2);
+  assert.deepEqual([...overlay], [["stable", 1], ["visible", 3]]);
+});

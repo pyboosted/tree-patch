@@ -113,6 +113,8 @@ rows.push(measure("diff: 100k siblings, one attr", () => {
 }));
 rows.push(measure("apply: sparse attr in 100k tree", () =>
   applyPatch(wideBase, widePatch).status));
+rows.push(measure("materialize: sparse attr in 100k tree", () =>
+  applyPatch(wideBase, widePatch).materialized.id));
 const reorderPatch = diffTrees(reorderBase, reorderTarget);
 rows.push(measure("apply: reverse 10k siblings", () =>
   applyPatch(reorderBase, reorderPatch).status));

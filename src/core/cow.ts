@@ -14,15 +14,30 @@ class CopyOnWriteMap<TKey, TValue> implements MutableMapLike<TKey, TValue> {
   private readonly writes = new Map<TKey, TValue>();
   private readonly deletes = new Set<TKey>();
   private cleared = false;
+  readonly layerDepth: number;
 
-  constructor(private readonly base: ReadonlyMap<TKey, TValue>) {}
+  constructor(private readonly base: ReadonlyMap<TKey, TValue>) {
+    this.layerDepth =
+      base instanceof CopyOnWriteMap
+        ? base.layerDepth + 1
+        : 1;
+  }
 
   get size(): number {
-    let size = 0;
-    for (const _entry of this.entries()) {
-      size += 1;
+    if (this.cleared) {
+      return this.writes.size;
     }
-
+    let size = this.base.size;
+    for (const key of this.deletes) {
+      if (this.base.has(key)) {
+        size -= 1;
+      }
+    }
+    for (const key of this.writes.keys()) {
+      if (!this.base.has(key)) {
+        size += 1;
+      }
+    }
     return size;
   }
 
@@ -36,7 +51,9 @@ class CopyOnWriteMap<TKey, TValue> implements MutableMapLike<TKey, TValue> {
     const had = this.has(key);
     this.writes.delete(key);
 
-    if (!this.cleared && this.base.has(key)) {
+    if (!this.cleared) {
+      // Keep a tombstone even when the key is currently absent. Cache maps may
+      // safely grow in an immutable base snapshot after this layer is created.
       this.deletes.add(key);
     }
 
@@ -115,7 +132,25 @@ class CopyOnWriteMap<TKey, TValue> implements MutableMapLike<TKey, TValue> {
   }
 
   materialize(): Map<TKey, TValue> {
-    return new Map(this.entries());
+    const materialized = this.cleared
+      ? new Map<TKey, TValue>()
+      : new Map(this.base);
+    for (const key of this.deletes) {
+      materialized.delete(key);
+    }
+    for (const [key, value] of this.writes) {
+      materialized.set(key, value);
+    }
+    return materialized;
+  }
+
+  shouldCompact(): boolean {
+    const changes = this.writes.size + this.deletes.size;
+    return (
+      this.cleared ||
+      this.layerDepth >= 8 ||
+      changes > Math.max(1_024, this.base.size / 2)
+    );
   }
 
   ensureMutableValue(
@@ -138,15 +173,30 @@ class CopyOnWriteSet<TValue> implements MutableSetLike<TValue> {
   private readonly adds = new Set<TValue>();
   private readonly deletes = new Set<TValue>();
   private cleared = false;
+  readonly layerDepth: number;
 
-  constructor(private readonly base: ReadonlySet<TValue>) {}
+  constructor(private readonly base: ReadonlySet<TValue>) {
+    this.layerDepth =
+      base instanceof CopyOnWriteSet
+        ? base.layerDepth + 1
+        : 1;
+  }
 
   get size(): number {
-    let size = 0;
-    for (const _value of this.values()) {
-      size += 1;
+    if (this.cleared) {
+      return this.adds.size;
     }
-
+    let size = this.base.size;
+    for (const value of this.deletes) {
+      if (this.base.has(value)) {
+        size -= 1;
+      }
+    }
+    for (const value of this.adds) {
+      if (!this.base.has(value)) {
+        size += 1;
+      }
+    }
     return size;
   }
 
@@ -166,7 +216,7 @@ class CopyOnWriteSet<TValue> implements MutableSetLike<TValue> {
     const had = this.has(value);
     this.adds.delete(value);
 
-    if (!this.cleared && this.base.has(value)) {
+    if (!this.cleared) {
       this.deletes.add(value);
     }
 
@@ -225,7 +275,25 @@ class CopyOnWriteSet<TValue> implements MutableSetLike<TValue> {
   }
 
   materialize(): Set<TValue> {
-    return new Set(this.values());
+    const materialized = this.cleared
+      ? new Set<TValue>()
+      : new Set(this.base);
+    for (const value of this.deletes) {
+      materialized.delete(value);
+    }
+    for (const value of this.adds) {
+      materialized.add(value);
+    }
+    return materialized;
+  }
+
+  shouldCompact(): boolean {
+    const changes = this.adds.size + this.deletes.size;
+    return (
+      this.cleared ||
+      this.layerDepth >= 8 ||
+      changes > Math.max(1_024, this.base.size / 2)
+    );
   }
 
   readonly [Symbol.toStringTag] = "Set";
@@ -280,4 +348,20 @@ export function materializeSet<TValue>(
   }
 
   return new Set(set);
+}
+
+export function finalizeMap<TKey, TValue>(
+  map: MutableMapLike<TKey, TValue>,
+): MutableMapLike<TKey, TValue> {
+  return map instanceof CopyOnWriteMap && map.shouldCompact()
+    ? map.materialize()
+    : map;
+}
+
+export function finalizeSet<TValue>(
+  set: MutableSetLike<TValue>,
+): MutableSetLike<TValue> {
+  return set instanceof CopyOnWriteSet && set.shouldCompact()
+    ? set.materialize()
+    : set;
 }
