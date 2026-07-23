@@ -251,6 +251,130 @@ test("diffTrees skips unchanged subtrees when collecting attribute ops", () => {
   );
 });
 
+test("diffTrees composes cross-parent moves with attribute and type changes", () => {
+  const base = createTree(createBaseDocument("rev-1"));
+  const source = createBaseDocument("rev-1");
+  const hero = structuredClone(source.root.children[0]!);
+  hero.attrs.title = "Moved and localized";
+  const legal = source.root.children[1]!;
+  const section = structuredClone(source.root.children[2]!);
+  section.children = [hero, ...section.children];
+
+  const movedAndEdited = createTree({
+    revision: "rev-1",
+    root: {
+      ...source.root,
+      children: [legal, section],
+    },
+  });
+  const movedAndEditedPatch = assertDiffRoundTrip(base, movedAndEdited);
+  assert.deepEqual(
+    movedAndEditedPatch.ops
+      .filter((op) => "nodeId" in op && op.nodeId === "hero")
+      .map((op) => op.kind),
+    ["moveNode", "setAttr"],
+  );
+
+  const typeChangedLegal = {
+    id: "legal",
+    type: "Section" as const,
+    attrs: { label: "Moved legal" },
+    children: [],
+  };
+  const sectionWithLegal = structuredClone(source.root.children[2]!);
+  sectionWithLegal.children = [typeChangedLegal, ...sectionWithLegal.children];
+  const movedAndReplaced = createTree({
+    revision: "rev-1",
+    root: {
+      ...source.root,
+      children: [source.root.children[0]!, sectionWithLegal],
+    },
+  });
+  const movedAndReplacedPatch = assertDiffRoundTrip(base, movedAndReplaced);
+  assert.deepEqual(
+    movedAndReplacedPatch.ops
+      .filter((op) => "nodeId" in op && op.nodeId === "legal")
+      .map((op) => op.kind),
+    ["moveNode", "replaceSubtree"],
+  );
+});
+
+test("diffTrees guards concurrent field additions and structural reorders", () => {
+  const oldDocument = createBaseDocument("rev-1");
+  const localDocument = createBaseDocument("rev-1");
+  localDocument.root.attrs.locale = "fr";
+  const upstreamDocument = createBaseDocument("rev-2");
+  upstreamDocument.root.attrs.locale = "de";
+
+  const oldBase = createTree(oldDocument);
+  const local = createTree(localDocument);
+  const upstream = createTree(upstreamDocument);
+  const fieldPatch = diffTrees(oldBase, local);
+  assert.deepEqual(fieldPatch.ops[0]?.guards, [
+    { kind: "attrAbsent", nodeId: "root", path: "/locale" },
+  ]);
+
+  const fieldRebase = rebasePatch(oldBase, upstream, fieldPatch);
+  assert.equal(fieldRebase.conflicts.length, 1);
+  assert.equal(fieldRebase.conflicts[0]?.kind, "GuardFailed");
+  assert.equal(fieldRebase.preview?.nodes.get("root")?.attrs.locale, "de");
+
+  const localReorderDocument = createBaseDocument("rev-1");
+  localReorderDocument.root.children = [
+    localReorderDocument.root.children[1]!,
+    localReorderDocument.root.children[0]!,
+    localReorderDocument.root.children[2]!,
+  ];
+  const upstreamReorderDocument = createBaseDocument("rev-2");
+  upstreamReorderDocument.root.children = [
+    upstreamReorderDocument.root.children[0]!,
+    upstreamReorderDocument.root.children[2]!,
+    upstreamReorderDocument.root.children[1]!,
+  ];
+
+  const reorderPatch = diffTrees(oldBase, createTree(localReorderDocument));
+  assertDiffRoundTrip(oldBase, createTree(localReorderDocument));
+  const reorderRebase = rebasePatch(
+    oldBase,
+    createTree(upstreamReorderDocument),
+    reorderPatch,
+  );
+  assert.ok(reorderRebase.conflicts.length > 0);
+  assert.equal(reorderRebase.conflicts[0]?.kind, "GuardFailed");
+});
+
+test("root attribute replacements do not conflict with unrelated child changes", () => {
+  type AtomicTypes = {
+    Atomic: string[];
+    Leaf: {};
+  };
+  const createAtomicTree = (attrs: string[], childIds: readonly string[]) =>
+    createDocument<AtomicTypes>({
+      root: {
+        id: "root",
+        type: "Atomic",
+        attrs,
+        children: childIds.map((id) => ({
+          id,
+          type: "Leaf" as const,
+          attrs: {},
+          children: [],
+        })),
+      },
+    });
+
+  const oldBase = createAtomicTree(["base"], ["a"]);
+  const local = createAtomicTree(["local"], ["a"]);
+  const upstream = createAtomicTree(["base"], ["a", "b"]);
+  const patch = diffTrees(oldBase, local);
+
+  assert.equal(patch.ops[0]?.guards?.[0]?.kind, "attrHash");
+  const rebased = rebasePatch(oldBase, upstream, patch);
+  assert.deepEqual(rebased.conflicts, []);
+  assert.deepEqual(rebased.preview?.nodes.get("root")?.attrs, ["local"]);
+  assert.equal(rebased.preview?.nodes.has("b"), true);
+});
+
 test("diffTrees uses replaceSubtree for type changes and honors replacement thresholds", () => {
   const base = createTree(createBaseDocument("rev-1"));
   const typeChanged = createTree({

@@ -177,10 +177,13 @@ export type Guard =
   | { kind: "nodeExists"; nodeId: NodeId }
   | { kind: "nodeAbsent"; nodeId: NodeId }
   | { kind: "nodeTypeIs"; nodeId: NodeId; nodeType: string }
+  | { kind: "attrAbsent"; nodeId: NodeId; path: JsonPointer }
   | { kind: "attrEquals"; nodeId: NodeId; path: JsonPointer; value: PersistedValue }
   | { kind: "attrHash"; nodeId: NodeId; path: JsonPointer; hash: string }
   | { kind: "subtreeHash"; nodeId: NodeId; hash: string }
   | { kind: "parentIs"; nodeId: NodeId; parentId: NodeId | null }
+  | { kind: "positionAtStart"; nodeId: NodeId }
+  | { kind: "positionAtEnd"; nodeId: NodeId }
   | { kind: "positionAfter"; nodeId: NodeId; afterId: NodeId }
   | { kind: "positionBefore"; nodeId: NodeId; beforeId: NodeId };
 

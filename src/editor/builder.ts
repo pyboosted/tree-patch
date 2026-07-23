@@ -43,6 +43,7 @@ type NodeTypeKey<TTypes extends NodeTypeMap> = Extract<keyof TTypes, string>;
 
 export interface PatchBuilderFieldOptions<TValue> {
   expect?: TValue;
+  expectAbsent?: boolean;
 }
 
 export interface PatchBuilderOptions<TTypes extends NodeTypeMap> {
@@ -229,6 +230,49 @@ function createAnchorGuards(
   return guards;
 }
 
+function createCurrentPositionGuards<TTypes extends NodeTypeMap>(
+  tree: IndexedTree<TTypes> | undefined,
+  nodeId: NodeId,
+): Guard[] {
+  if (!tree) {
+    return [];
+  }
+
+  const parentId = tree.index.parentById.get(nodeId);
+  if (parentId == null) {
+    return [];
+  }
+
+  const siblings = tree.nodes.get(parentId)?.childIds;
+  const index = siblings?.indexOf(nodeId) ?? -1;
+  if (!siblings || index < 0) {
+    return [];
+  }
+
+  const guards: Guard[] = [];
+  if (index === 0) {
+    guards.push({ kind: "positionAtStart", nodeId });
+  } else {
+    guards.push({
+      kind: "positionAfter",
+      nodeId,
+      afterId: siblings[index - 1]!,
+    });
+  }
+
+  if (index === siblings.length - 1) {
+    guards.push({ kind: "positionAtEnd", nodeId });
+  } else {
+    guards.push({
+      kind: "positionBefore",
+      nodeId,
+      beforeId: siblings[index + 1]!,
+    });
+  }
+
+  return guards;
+}
+
 class PatchBuilderController<TTypes extends NodeTypeMap> {
   private readonly schemas: CompiledSchemas<TTypes>;
   private readonly validationSession: PatchExecutionSession<TTypes> | undefined;
@@ -362,6 +406,30 @@ class PatchBuilderController<TTypes extends NodeTypeMap> {
     }];
   }
 
+  private createAbsentFieldGuards(
+    nodeId: NodeId,
+    pointer: JsonPointer,
+  ): Guard[] {
+    const currentNode = this.getNode(nodeId);
+    if (currentNode) {
+      const resolution = resolvePointer(currentNode.attrs, pointer);
+      if (resolution.ok) {
+        throw new MalformedPatchError(
+          `Expected node "${nodeId}" at "${pointer}" to be absent in the current builder state.`,
+          {
+            details: {
+              nodeId,
+              path: pointer,
+              actual: resolution.value,
+            },
+          },
+        );
+      }
+    }
+
+    return [{ kind: "attrAbsent", nodeId, path: pointer }];
+  }
+
   private commitOp(op: PatchOp): void {
     if (this.validationSession) {
       const result = applyOperationInSession(this.validationSession, op);
@@ -387,9 +455,19 @@ class PatchBuilderController<TTypes extends NodeTypeMap> {
   ): void {
     const pointer = pathToPointer(path as AttrPath<unknown>);
     const nodeType = this.resolveNodeType(nodeId, explicitNodeType);
-    const guards = options?.expect === undefined
-      ? undefined
-      : this.createFieldGuards(nodeId, pointer, options.expect, nodeType);
+    if (options?.expectAbsent && Object.hasOwn(options, "expect")) {
+      throw new MalformedPatchError(
+        `Field operation for node "${nodeId}" at "${pointer}" cannot expect both a value and absence.`,
+        {
+          details: { nodeId, path: pointer },
+        },
+      );
+    }
+    const guards = options?.expectAbsent
+      ? this.createAbsentFieldGuards(nodeId, pointer)
+      : options && Object.hasOwn(options, "expect")
+        ? this.createFieldGuards(nodeId, pointer, options.expect, nodeType)
+        : undefined;
 
     this.commitOp({
       kind: "setAttr",
@@ -409,9 +487,17 @@ class PatchBuilderController<TTypes extends NodeTypeMap> {
   ): void {
     const pointer = pathToPointer(path as AttrPath<unknown>);
     const nodeType = this.resolveNodeType(nodeId, explicitNodeType);
-    const guards = options?.expect === undefined
-      ? undefined
-      : this.createFieldGuards(nodeId, pointer, options.expect, nodeType);
+    if (options?.expectAbsent) {
+      throw new MalformedPatchError(
+        `removeAttr for node "${nodeId}" at "${pointer}" cannot expect an absent value.`,
+        {
+          details: { nodeId, path: pointer },
+        },
+      );
+    }
+    const guards = options && Object.hasOwn(options, "expect")
+      ? this.createFieldGuards(nodeId, pointer, options.expect, nodeType)
+      : undefined;
 
     this.commitOp({
       kind: "removeAttr",
@@ -495,6 +581,7 @@ class PatchBuilderController<TTypes extends NodeTypeMap> {
         nodeId,
         parentId: this.currentTree?.index.parentById.get(nodeId) ?? null,
       });
+      guards.push(...createCurrentPositionGuards(this.currentTree, nodeId));
     }
 
     this.commitOp({

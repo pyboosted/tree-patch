@@ -436,6 +436,52 @@ function evaluateGuard<TTypes extends NodeTypeMap>(
       }
       return { ok: true };
     }
+    case "attrAbsent": {
+      const node = overlay.nodes.get(guard.nodeId);
+      if (!node) {
+        return {
+          ok: false,
+          conflict: toConflict(
+            opId,
+            "GuardFailed",
+            `Guard attrAbsent failed because node "${guard.nodeId}" is missing.`,
+            { nodeId: guard.nodeId },
+          ),
+        };
+      }
+
+      const resolution = resolvePointer(node.attrs, guard.path);
+      if (resolution.ok) {
+        return {
+          ok: false,
+          conflict: toConflict(
+            opId,
+            "GuardFailed",
+            `Guard attrAbsent failed for node "${guard.nodeId}" at "${guard.path}".`,
+            {
+              nodeId: guard.nodeId,
+              path: guard.path,
+              expected: "absent",
+              actual: resolution.value,
+            },
+          ),
+        };
+      }
+
+      if (resolution.reason !== "Missing") {
+        return {
+          ok: false,
+          conflict: toConflict(
+            opId,
+            "PathInvalid",
+            `Guard path "${guard.path}" is invalid for node "${guard.nodeId}".`,
+            { nodeId: guard.nodeId, path: guard.path },
+          ),
+        };
+      }
+
+      return { ok: true };
+    }
     case "attrEquals": {
       const node = overlay.nodes.get(guard.nodeId);
       if (!node) {
@@ -562,6 +608,62 @@ function evaluateGuard<TTypes extends NodeTypeMap>(
             "GuardFailed",
             `Guard parentIs failed for node "${guard.nodeId}".`,
             { nodeId: guard.nodeId, expected: guard.parentId, actual },
+          ),
+        };
+      }
+      return { ok: true };
+    }
+    case "positionAtStart": {
+      const parentId = overlay.index.parentById.get(guard.nodeId);
+      if (parentId == null || !overlay.nodes.has(guard.nodeId)) {
+        return {
+          ok: false,
+          conflict: toConflict(
+            opId,
+            "GuardFailed",
+            `Guard positionAtStart failed for node "${guard.nodeId}".`,
+            { nodeId: guard.nodeId, expected: "atStart" },
+          ),
+        };
+      }
+
+      const siblings = getParentChildIds(overlay, parentId);
+      if (siblings[0] !== guard.nodeId) {
+        return {
+          ok: false,
+          conflict: toConflict(
+            opId,
+            "GuardFailed",
+            `Guard positionAtStart failed for node "${guard.nodeId}".`,
+            { nodeId: guard.nodeId, expected: "atStart" },
+          ),
+        };
+      }
+      return { ok: true };
+    }
+    case "positionAtEnd": {
+      const parentId = overlay.index.parentById.get(guard.nodeId);
+      if (parentId == null || !overlay.nodes.has(guard.nodeId)) {
+        return {
+          ok: false,
+          conflict: toConflict(
+            opId,
+            "GuardFailed",
+            `Guard positionAtEnd failed for node "${guard.nodeId}".`,
+            { nodeId: guard.nodeId, expected: "atEnd" },
+          ),
+        };
+      }
+
+      const siblings = getParentChildIds(overlay, parentId);
+      if (siblings[siblings.length - 1] !== guard.nodeId) {
+        return {
+          ok: false,
+          conflict: toConflict(
+            opId,
+            "GuardFailed",
+            `Guard positionAtEnd failed for node "${guard.nodeId}".`,
+            { nodeId: guard.nodeId, expected: "atEnd" },
           ),
         };
       }

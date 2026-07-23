@@ -160,6 +160,16 @@ editor.node("legal", "RichText").hide();
 const patch = editor.build();
 ```
 
+When a field must still be absent, use an explicit absence guard:
+
+```ts
+editor.node("hero", "Hero").set(["subtitle"], "Limited offer", {
+  expectAbsent: true,
+});
+```
+
+This prevents rebasing the patch over an independently added source value.
+
 ## Applying, Validating, and Materializing
 
 ```ts

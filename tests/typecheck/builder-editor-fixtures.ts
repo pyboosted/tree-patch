@@ -9,6 +9,7 @@ type ContentTypes = {
   Page: {};
   Hero: {
     title: string;
+    subtitle?: string;
     image: {
       url: string;
       alt?: string;
@@ -77,6 +78,7 @@ builder.insertNode("root", {
 
 const editor = createEditor(source);
 editor.node("hero", "Hero").set(["image", "url"], "/img/fr.png");
+editor.node("hero", "Hero").set(["subtitle"], "Limited offer", { expectAbsent: true });
 editor.node("hero", "Hero").set(["style", "fontSize"], 28);
 editor.node("legal", "RichText").set(["html"], "<p>Updated</p>");
 

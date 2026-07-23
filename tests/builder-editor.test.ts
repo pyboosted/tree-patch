@@ -7,6 +7,7 @@ import {
   createEditor,
   EditorNodeMissingError,
   EditorNodeTypeMismatchError,
+  MalformedPatchError,
   materialize,
   MissingCodecError,
   MissingPatchIdError,
@@ -21,7 +22,9 @@ import {
 import { getPathHash } from "../src/core/hash.js";
 
 type ContentTypes = {
-  Page: {};
+  Page: {
+    locale?: string;
+  };
   Hero: {
     title: string;
     subtitle?: string;
@@ -185,6 +188,34 @@ test("patchBuilder requires patchId and emits deterministic field and visibility
   );
   assert.equal(patch.ops[2]?.kind, "hideNode");
   assert.deepEqual(patch.ops[2]?.guards, [{ kind: "nodeExists", nodeId: "legal" }]);
+});
+
+test("builder can guard an absent field explicitly", () => {
+  const source = createSourceTree();
+  const patch = patchBuilder<ContentTypes>({ source })
+    .patchId("set-locale")
+    .node("root", "Page")
+    .set(["locale"], "fr", { expectAbsent: true })
+    .build();
+
+  assert.deepEqual(patch.ops[0]?.guards, [
+    { kind: "attrAbsent", nodeId: "root", path: "/locale" },
+  ]);
+
+  const upstreamDocument = createSourceDocument("rev-2");
+  upstreamDocument.root.attrs.locale = "de";
+  const upstream = createDocument(upstreamDocument, { schema: schemaWithCodec });
+  const applied = applyPatch(upstream, patch);
+  assert.equal(applied.status, "conflict");
+
+  assert.throws(
+    () =>
+      patchBuilder<ContentTypes>({ source: upstream })
+        .patchId("bad-absence")
+        .node("root", "Page")
+        .set(["locale"], "fr", { expectAbsent: true }),
+    MalformedPatchError,
+  );
 });
 
 test("builder and editor serialize codec-backed values and reject missing codecs", () => {

@@ -180,6 +180,14 @@ function assertGuard(guard: unknown, location: string): asserts guard is Guard {
         });
       }
       return;
+    case "attrAbsent":
+      if (typeof candidate.nodeId !== "string" || typeof candidate.path !== "string") {
+        throw new MalformedPatchError(`${location} must include string nodeId and path.`, {
+          details: { location },
+        });
+      }
+      parseJsonPointer(candidate.path);
+      return;
     case "attrEquals":
       if (typeof candidate.nodeId !== "string" || typeof candidate.path !== "string") {
         throw new MalformedPatchError(`${location} must include string nodeId and path.`, {
@@ -214,6 +222,14 @@ function assertGuard(guard: unknown, location: string): asserts guard is Guard {
         (candidate.parentId !== null && typeof candidate.parentId !== "string")
       ) {
         throw new MalformedPatchError(`${location} must include string nodeId and string|null parentId.`, {
+          details: { location },
+        });
+      }
+      return;
+    case "positionAtStart":
+    case "positionAtEnd":
+      if (typeof candidate.nodeId !== "string") {
+        throw new MalformedPatchError(`${location}.nodeId must be a string.`, {
           details: { location },
         });
       }

@@ -483,6 +483,49 @@ function guardsForAnchor(parentId: NodeId, position: ChildPosition | undefined):
   return guards;
 }
 
+function guardsForCurrentPosition(
+  nodeId: NodeId,
+  siblings: readonly NodeId[],
+  index: number,
+): Guard[] {
+  if (index < 0) {
+    return [];
+  }
+
+  const guards: Guard[] = [];
+  if (index === 0) {
+    guards.push({ kind: "positionAtStart", nodeId });
+  } else {
+    guards.push({
+      kind: "positionAfter",
+      nodeId,
+      afterId: siblings[index - 1]!,
+    });
+  }
+
+  if (index === siblings.length - 1) {
+    guards.push({ kind: "positionAtEnd", nodeId });
+  } else {
+    guards.push({
+      kind: "positionBefore",
+      nodeId,
+      beforeId: siblings[index + 1]!,
+    });
+  }
+
+  return guards;
+}
+
+function hasSameNodeOrder(
+  left: readonly NodeId[],
+  right: readonly NodeId[],
+): boolean {
+  return (
+    left.length === right.length &&
+    left.every((nodeId, index) => nodeId === right[index])
+  );
+}
+
 function getValueAtPointer<TTypes extends NodeTypeMap>(
   tree: IndexedTree<TTypes>,
   nodeId: NodeId,
@@ -575,7 +618,9 @@ function collectAttrOpsForNode<TTypes extends NodeTypeMap>(
       nodeId,
       path: "",
       value: encodeRuntimeValueForPointer(context.schemas, String(targetNode.type), "", targetValue),
-      guards: [{ kind: "subtreeHash", nodeId, hash: getSubtreeHash(context.base, nodeId) }],
+      guards: [createValueGuard(context, nodeId, "")].filter(
+        (guard): guard is Guard => guard !== undefined,
+      ),
     });
     return;
   }
@@ -595,7 +640,9 @@ function collectAttrOpsForNode<TTypes extends NodeTypeMap>(
         nodeId,
         path: "",
         value: encodeRuntimeValueForPointer(context.schemas, String(targetNode.type), "", targetValue),
-        guards: [{ kind: "subtreeHash", nodeId, hash: getSubtreeHash(context.base, nodeId) }],
+        guards: [createValueGuard(context, nodeId, "")].filter(
+          (guard): guard is Guard => guard !== undefined,
+        ),
       });
       return;
     }
@@ -640,6 +687,7 @@ function collectAttrOpsForNode<TTypes extends NodeTypeMap>(
           nextPointer,
           targetValue[key],
         ),
+        guards: [{ kind: "attrAbsent", nodeId, path: nextPointer }],
       });
       continue;
     }
@@ -866,7 +914,7 @@ function collectMoveOps<TTypes extends NodeTypeMap>(
 
     for (let index = 0; index < parent.childIds.length; index += 1) {
       const nodeId = parent.childIds[index]!;
-      if (!context.base.nodes.has(nodeId) || context.replacementRoots.has(nodeId)) {
+      if (!context.base.nodes.has(nodeId)) {
         if (context.target.nodes.has(nodeId)) {
           visit(nodeId);
         }
@@ -878,6 +926,14 @@ function collectMoveOps<TTypes extends NodeTypeMap>(
       const currentParentId = planning.parentById.get(nodeId) ?? null;
       const currentSiblings = currentParentId != null ? planning.childIdsByParent.get(currentParentId) ?? [] : [];
       const currentIndex = currentSiblings.indexOf(nodeId);
+      const sourceSiblings =
+        currentParentId != null
+          ? context.base.nodes.get(currentParentId)?.childIds
+          : undefined;
+      const currentPositionGuards =
+        sourceSiblings && hasSameNodeOrder(currentSiblings, sourceSiblings)
+          ? guardsForCurrentPosition(nodeId, currentSiblings, currentIndex)
+          : [];
       const alreadyCorrect =
         currentParentId === targetParentId &&
         ((targetPreviousSibling === undefined && currentIndex === 0) ||
@@ -896,10 +952,15 @@ function collectMoveOps<TTypes extends NodeTypeMap>(
             { kind: "nodeExists", nodeId },
             { kind: "nodeExists", nodeId: targetParentId },
             { kind: "parentIs", nodeId, parentId: context.base.index.parentById.get(nodeId) ?? null },
+            ...currentPositionGuards,
             ...guardsForAnchor(targetParentId, position),
           ],
         });
         movePlanningNode(planning, nodeId, targetParentId, position);
+      }
+
+      if (context.replacementRoots.has(nodeId)) {
+        continue;
       }
 
       visit(nodeId);
@@ -915,35 +976,23 @@ function collectAttrOps<TTypes extends NodeTypeMap>(
 ): Array<SetAttrOp | RemoveAttrOp> {
   const ops: Array<SetAttrOp | RemoveAttrOp> = [];
 
-  function visit(nodeId: NodeId): void {
-    if (context.replacementRoots.has(nodeId)) {
-      return;
-    }
-
-    const baseNode = context.base.nodes.get(nodeId);
+  for (const [nodeId, baseNode] of context.base.nodes) {
     const targetNode = context.target.nodes.get(nodeId);
-    if (!baseNode || !targetNode) {
-      return;
+    if (
+      !targetNode ||
+      isCoveredByRoots(context.target, nodeId, context.replacementRoots, true)
+    ) {
+      continue;
     }
 
     if (getSubtreeHash(context.base, nodeId) === getSubtreeHash(context.target, nodeId)) {
-      return;
+      continue;
     }
 
     if (getNodeHash(context.base, nodeId) !== getNodeHash(context.target, nodeId)) {
       collectAttrOpsForNode(context, nodeId, "", baseNode.attrs, targetNode.attrs, ops);
     }
-
-    const targetChildIds = new Set(targetNode.childIds);
-    for (const childId of baseNode.childIds) {
-      if (!targetChildIds.has(childId)) {
-        continue;
-      }
-      visit(childId);
-    }
   }
-
-  visit(context.base.rootId);
 
   return ops.sort((left, right) => {
     if (left.nodeId !== right.nodeId) {
