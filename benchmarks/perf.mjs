@@ -1,6 +1,7 @@
 import {
   applyPatch,
   createDocument,
+  createResolutionSession,
   diffTrees,
 } from "../dist/index.js";
 
@@ -61,6 +62,19 @@ const reorderBase = wideTree(10_000, 1);
 const reorderTarget = wideTree(10_000, 1, true);
 const thresholdBase = deepTree(5_000, 0);
 const thresholdTarget = deepTree(5_000, 1);
+const bagTree = (offset) => createDocument({
+  root: {
+    id: "bag",
+    type: "Bag",
+    attrs: Object.fromEntries(
+      Array.from({ length: 1_000 }, (_, index) => [
+        `key-${index}`,
+        index + offset,
+      ]),
+    ),
+    children: [],
+  },
+});
 
 const rows = [];
 rows.push(measure("diff: 100k siblings, one attr", () =>
@@ -72,5 +86,18 @@ rows.push(measure("diff: 5k chain ratio threshold", () =>
   diffTrees(thresholdBase, thresholdTarget, {
     replaceSubtreeWhen: { subtreeChangeRatioGte: 0.5 },
   }).ops.length));
+const resolutionOldBase = bagTree(0);
+const resolutionPatch = diffTrees(resolutionOldBase, bagTree(1));
+const resolution = createResolutionSession(
+  resolutionOldBase,
+  bagTree(2),
+  resolutionPatch,
+);
+rows.push(measure("resolution: take base for 1k ops", () => {
+  for (const conflict of resolution.conflicts) {
+    resolution.takeBase(conflict.opId);
+  }
+  return resolution.build().status;
+}));
 
 console.table(rows);

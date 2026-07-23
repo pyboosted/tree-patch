@@ -55,6 +55,7 @@ class ConflictResolutionSessionController<TTypes extends NodeTypeMap>
   private readonly initialConflictByOpId = new Map<string, PatchConflict>();
   private readonly decisions = new Map<string, ConflictResolutionDecision>();
   private state: ResolutionState<TTypes>;
+  private stateDirty = false;
 
   constructor(
     oldBase: IndexedTree<TTypes>,
@@ -66,24 +67,6 @@ class ConflictResolutionSessionController<TTypes extends NodeTypeMap>
     this.newBase = newBase;
     this.options = options;
     this.includeHidden = options.includeHidden ?? true;
-
-    const sourceValidation = executePatchInternal(oldBase, patch, {
-      mode: "preview",
-      includeHidden: this.includeHidden,
-      produceTree: false,
-    });
-
-    if (sourceValidation.conflicts.length > 0) {
-      throw new InvalidResolutionInputError(
-        `Conflict resolution requires a patch that applies cleanly to the original base; patch "${patch.patchId}" already conflicts with the provided old base.`,
-        {
-          details: {
-            patchId: patch.patchId,
-            conflicts: sourceValidation.conflicts,
-          },
-        },
-      );
-    }
 
     this.initialRebase = rebasePatch(oldBase, newBase, patch, {
       includeHidden: this.includeHidden,
@@ -99,31 +82,39 @@ class ConflictResolutionSessionController<TTypes extends NodeTypeMap>
       this.initialConflictByOpId.set(conflict.opId, conflict);
     });
 
-    this.state = this.recompute();
+    const initialConflicts = this.sortConflicts(this.initialRebase.conflicts);
+    this.state = {
+      preview: this.initialRebase.preview ?? newBase,
+      conflicts: initialConflicts,
+      unresolvedConflicts: initialConflicts,
+      replayConflicts: [],
+      appliedOpIds: [...this.initialRebase.appliedOpIds],
+      skippedOpIds: [...this.initialRebase.skippedOpIds],
+    };
   }
 
   get preview(): IndexedTree<TTypes> {
-    return this.state.preview;
+    return this.currentState().preview;
   }
 
   get conflicts(): readonly PatchConflict[] {
-    return this.state.conflicts;
+    return this.currentState().conflicts;
   }
 
   get unresolvedConflicts(): readonly PatchConflict[] {
-    return this.state.unresolvedConflicts;
+    return this.currentState().unresolvedConflicts;
   }
 
   get replayConflicts(): readonly PatchConflict[] {
-    return this.state.replayConflicts;
+    return this.currentState().replayConflicts;
   }
 
   get appliedOpIds(): readonly string[] {
-    return this.state.appliedOpIds;
+    return this.currentState().appliedOpIds;
   }
 
   get skippedOpIds(): readonly string[] {
-    return this.state.skippedOpIds;
+    return this.currentState().skippedOpIds;
   }
 
   getDecision(opId: string): ConflictResolutionDecision | undefined {
@@ -133,54 +124,55 @@ class ConflictResolutionSessionController<TTypes extends NodeTypeMap>
   takeBase(opId: string): this {
     this.ensureKnownOpId(opId);
     this.decisions.set(opId, "takeBase");
-    this.state = this.recompute();
+    this.stateDirty = true;
     return this;
   }
 
   keepLocal(opId: string): this {
     this.ensureKnownOpId(opId);
     this.decisions.set(opId, "keepLocal");
-    this.state = this.recompute();
+    this.stateDirty = true;
     return this;
   }
 
   reset(opId: string): this {
     this.ensureKnownOpId(opId);
     this.decisions.delete(opId);
-    this.state = this.recompute();
+    this.stateDirty = true;
     return this;
   }
 
   takeBaseAll(): this {
-    this.conflicts.forEach((conflict) => {
+    this.currentState().conflicts.forEach((conflict) => {
       this.decisions.set(conflict.opId, "takeBase");
     });
-    this.state = this.recompute();
+    this.stateDirty = true;
     return this;
   }
 
   keepLocalAll(): this {
-    this.conflicts.forEach((conflict) => {
+    this.currentState().conflicts.forEach((conflict) => {
       this.decisions.set(conflict.opId, "keepLocal");
     });
-    this.state = this.recompute();
+    this.stateDirty = true;
     return this;
   }
 
   build(): ResolutionBuildResult<TTypes> {
-    if (this.state.conflicts.length > 0) {
+    const state = this.currentState();
+    if (state.conflicts.length > 0) {
       return {
         status: "unresolved",
-        preview: this.state.preview,
-        conflicts: this.state.conflicts,
-        unresolvedConflicts: this.state.unresolvedConflicts,
-        replayConflicts: this.state.replayConflicts,
-        appliedOpIds: this.state.appliedOpIds,
-        skippedOpIds: this.state.skippedOpIds,
+        preview: state.preview,
+        conflicts: state.conflicts,
+        unresolvedConflicts: state.unresolvedConflicts,
+        replayConflicts: state.replayConflicts,
+        appliedOpIds: state.appliedOpIds,
+        skippedOpIds: state.skippedOpIds,
       };
     }
 
-    const resolvedPatch = diffTrees(this.newBase, this.state.preview, this.options.diff);
+    const resolvedPatch = diffTrees(this.newBase, state.preview, this.options.diff);
     resolvedPatch.patchId = this.patch.patchId;
     if (this.newBase.revision !== undefined) {
       resolvedPatch.baseRevision = this.newBase.revision;
@@ -198,9 +190,9 @@ class ConflictResolutionSessionController<TTypes extends NodeTypeMap>
     return {
       status: "resolved",
       resolvedPatch,
-      preview: this.state.preview,
-      appliedOpIds: this.state.appliedOpIds,
-      skippedOpIds: this.state.skippedOpIds,
+      preview: state.preview,
+      appliedOpIds: state.appliedOpIds,
+      skippedOpIds: state.skippedOpIds,
     };
   }
 
@@ -213,6 +205,14 @@ class ConflictResolutionSessionController<TTypes extends NodeTypeMap>
         },
       );
     }
+  }
+
+  private currentState(): ResolutionState<TTypes> {
+    if (this.stateDirty) {
+      this.state = this.recompute();
+      this.stateDirty = false;
+    }
+    return this.state;
   }
 
   private recompute(): ResolutionState<TTypes> {

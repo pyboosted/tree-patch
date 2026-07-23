@@ -4,6 +4,7 @@ import test from "node:test";
 import {
   applyPatch,
   createDocument,
+  createResolutionSession,
   diffTrees,
 } from "../src/index.js";
 import { getPathHash } from "../src/core/hash.js";
@@ -12,6 +13,7 @@ type PerfTypes = {
   Root: { version: number };
   Leaf: Record<string, number>;
   Deep: { value: number };
+  Bag: Record<string, number>;
 };
 
 function createWideTree(size: number, version: number, reverse = false) {
@@ -107,4 +109,32 @@ test("path hash cache hits grow one mutable inner map instead of cloning it", ()
     getPathHash(tree, "root", `/key-${index}`);
   }
   assert.equal(tree.cache.pathHashByNodeId.get("root")?.size, 3_000);
+});
+
+test("batched resolution decisions defer replay until state is observed", () => {
+  const makeBagTree = (offset: number) =>
+    createDocument<PerfTypes>({
+      root: {
+        id: "root",
+        type: "Bag",
+        attrs: Object.fromEntries(
+          Array.from({ length: 1_000 }, (_, index) => [
+            `key-${index}`,
+            index + offset,
+          ]),
+        ),
+        children: [],
+      },
+    });
+  const oldBase = makeBagTree(0);
+  const patch = diffTrees(oldBase, makeBagTree(1));
+  const session = createResolutionSession(oldBase, makeBagTree(2), patch);
+
+  assert.equal(session.conflicts.length, 1_000);
+  for (const conflict of session.conflicts) {
+    session.takeBase(conflict.opId);
+  }
+  const result = session.build();
+  assert.equal(result.status, "resolved");
+  assert.equal(result.appliedOpIds.length, 0);
 });
