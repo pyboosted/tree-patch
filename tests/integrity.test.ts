@@ -78,6 +78,37 @@ test("JSON object keys are own data properties throughout clone, diff, and apply
   }
 });
 
+test("codec-shaped JSON user data round-trips through diff and apply", () => {
+  const payload = {
+    $codec: "user-tag",
+    value: {
+      ok: true,
+    },
+  };
+  const base = createJsonTree();
+  const target = createJsonTree({ payload });
+  const patch = JSON.parse(
+    JSON.stringify(diffTrees(base, target)),
+  ) as TreePatch;
+
+  assert.deepEqual(
+    patch.ops[0]?.kind === "setAttr" ? patch.ops[0].value : undefined,
+    {
+      $codec: "$tree-patch/json",
+      value: payload,
+    },
+  );
+
+  const applied = applyPatch(base, patch);
+  assert.equal(applied.status, "applied");
+  if (applied.status === "applied") {
+    assert.deepEqual(
+      applied.tree.nodes.get("root")?.attrs.payload,
+      payload,
+    );
+  }
+});
+
 test("inherited object properties do not resolve as attribute paths", () => {
   const source = createJsonTree();
   const patch: TreePatch = {

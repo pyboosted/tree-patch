@@ -49,6 +49,7 @@ type NodeTypeKey<TTypes extends NodeTypeMap> = Extract<keyof TTypes, string>;
 export interface PatchBuilderFieldOptions<TValue> {
   expect?: TValue;
   expectAbsent?: boolean;
+  unguarded?: boolean;
 }
 
 export interface PatchBuilderOptions<TTypes extends NodeTypeMap> {
@@ -496,6 +497,26 @@ class PatchBuilderController<TTypes extends NodeTypeMap> {
     return [{ kind: "attrAbsent", nodeId, path: pointer }];
   }
 
+  private createCurrentFieldGuards(
+    nodeId: NodeId,
+    pointer: JsonPointer,
+    nodeType: string | undefined,
+  ): Guard[] | undefined {
+    const currentNode = this.getNode(nodeId);
+    if (!currentNode) {
+      return undefined;
+    }
+    const resolution = resolvePointer(currentNode.attrs, pointer);
+    return resolution.ok
+      ? this.createFieldGuards(
+          nodeId,
+          pointer,
+          resolution.value,
+          nodeType,
+        )
+      : this.createAbsentFieldGuards(nodeId, pointer);
+  }
+
   private commitOp(op: PatchOp): void {
     if (this.validationSession) {
       const result = applyOperationInSession(this.validationSession, op);
@@ -524,7 +545,9 @@ class PatchBuilderController<TTypes extends NodeTypeMap> {
       typeof segment === "number" ? "index" as const : "property" as const
     );
     const nodeType = this.resolveNodeType(nodeId, explicitNodeType);
-    if (options?.expectAbsent && Object.hasOwn(options, "expect")) {
+    const hasExpectedValue =
+      options !== undefined && Object.hasOwn(options, "expect");
+    if (options?.expectAbsent && hasExpectedValue) {
       throw new MalformedPatchError(
         `Field operation for node "${nodeId}" at "${pointer}" cannot expect both a value and absence.`,
         {
@@ -532,11 +555,21 @@ class PatchBuilderController<TTypes extends NodeTypeMap> {
         },
       );
     }
-    const guards = options?.expectAbsent
-      ? this.createAbsentFieldGuards(nodeId, pointer)
-      : options && Object.hasOwn(options, "expect")
-        ? this.createFieldGuards(nodeId, pointer, options.expect, nodeType)
-        : undefined;
+    if (options?.unguarded && (options.expectAbsent || hasExpectedValue)) {
+      throw new MalformedPatchError(
+        `Field operation for node "${nodeId}" at "${pointer}" cannot combine unguarded mode with an expectation.`,
+        {
+          details: { nodeId, path: pointer },
+        },
+      );
+    }
+    const guards = options?.unguarded
+      ? undefined
+      : options?.expectAbsent
+        ? this.createAbsentFieldGuards(nodeId, pointer)
+        : hasExpectedValue
+          ? this.createFieldGuards(nodeId, pointer, options!.expect, nodeType)
+          : this.createCurrentFieldGuards(nodeId, pointer, nodeType);
 
     this.commitOp({
       kind: "setAttr",
@@ -557,6 +590,8 @@ class PatchBuilderController<TTypes extends NodeTypeMap> {
   ): void {
     const pointer = pathToPointer(path as AttrPath<unknown>);
     const nodeType = this.resolveNodeType(nodeId, explicitNodeType);
+    const hasExpectedValue =
+      options !== undefined && Object.hasOwn(options, "expect");
     if (options?.expectAbsent) {
       throw new MalformedPatchError(
         `removeAttr for node "${nodeId}" at "${pointer}" cannot expect an absent value.`,
@@ -565,9 +600,19 @@ class PatchBuilderController<TTypes extends NodeTypeMap> {
         },
       );
     }
-    const guards = options && Object.hasOwn(options, "expect")
-      ? this.createFieldGuards(nodeId, pointer, options.expect, nodeType)
-      : undefined;
+    if (options?.unguarded && hasExpectedValue) {
+      throw new MalformedPatchError(
+        `removeAttr for node "${nodeId}" at "${pointer}" cannot combine unguarded mode with an expectation.`,
+        {
+          details: { nodeId, path: pointer },
+        },
+      );
+    }
+    const guards = options?.unguarded
+      ? undefined
+      : hasExpectedValue
+        ? this.createFieldGuards(nodeId, pointer, options!.expect, nodeType)
+        : this.createCurrentFieldGuards(nodeId, pointer, nodeType);
 
     this.commitOp({
       kind: "removeAttr",

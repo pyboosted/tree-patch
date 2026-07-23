@@ -1,11 +1,9 @@
 import type {
-  ChildPosition,
   IndexedNode,
   IndexedTree,
   JsonObject,
   NodeId,
   NodeTypeMap,
-  PatchConflict,
 } from "./types.js";
 import {
   createCopyOnWriteMap,
@@ -134,93 +132,14 @@ export function getParentChildIds<TTypes extends NodeTypeMap>(
   return parent?.childIds ?? [];
 }
 
-export function updateSiblingPositions<TTypes extends NodeTypeMap>(
-  overlay: OverlayState<TTypes>,
-  parentId: NodeId,
-): void {
-  const childIds = getParentChildIds(overlay, parentId);
-  childIds.forEach((childId, index) => {
-    overlay.index.positionById.set(childId, index);
-  });
-}
-
-export function resolvePositionAgainstChildIds(
-  childIds: readonly NodeId[],
-  position: ChildPosition | undefined,
-  opId: string,
-  parentId: NodeId,
-  toConflict: (
-    opId: string,
-    kind: PatchConflict["kind"],
-    message: string,
-    extras?: Omit<PatchConflict, "opId" | "kind" | "message">,
-  ) => PatchConflict,
-): { ok: true; index: number } | { ok: false; conflict: PatchConflict } {
-  if (!position || "atEnd" in position) {
-    return { ok: true, index: childIds.length };
-  }
-
-  if ("atStart" in position) {
-    return { ok: true, index: 0 };
-  }
-
-  if ("beforeId" in position) {
-    const index = childIds.indexOf(position.beforeId);
-    if (index === -1) {
-      return {
-        ok: false,
-        conflict: toConflict(
-          opId,
-          "AnchorMissing",
-          `Anchor node "${position.beforeId}" is not a child of "${parentId}".`,
-          { nodeId: parentId },
-        ),
-      };
-    }
-
-    return { ok: true, index };
-  }
-
-  const index = childIds.indexOf(position.afterId);
-  if (index === -1) {
-    return {
-      ok: false,
-      conflict: toConflict(
-        opId,
-        "AnchorMissing",
-        `Anchor node "${position.afterId}" is not a child of "${parentId}".`,
-        { nodeId: parentId },
-      ),
-    };
-  }
-
-  return { ok: true, index: index + 1 };
-}
-
-export function collectSubtreeNodeIds<TTypes extends NodeTypeMap>(
-  overlay: OverlayState<TTypes>,
-  nodeId: NodeId,
-  collected: NodeId[] = [],
-): NodeId[] {
-  const stack = [nodeId];
-  while (stack.length > 0) {
-    const currentId = stack.pop()!;
-    const node = overlay.nodes.get(currentId);
-    if (!node) {
-      continue;
-    }
-    collected.push(currentId);
-    for (let index = node.childIds.length - 1; index >= 0; index -= 1) {
-      stack.push(node.childIds[index]!);
-    }
-  }
-  return collected;
-}
-
 export function reindexSubtreeDepths<TTypes extends NodeTypeMap>(
   overlay: OverlayState<TTypes>,
   nodeId: NodeId,
   depth: number,
+  getChildIds: (
+    nodeId: NodeId,
+    node: IndexedNode<TTypes>,
+  ) => readonly NodeId[] = (_currentId, node) => node.childIds,
 ): void {
   const stack: Array<{ nodeId: NodeId; depth: number }> = [{ nodeId, depth }];
   while (stack.length > 0) {
@@ -230,9 +149,10 @@ export function reindexSubtreeDepths<TTypes extends NodeTypeMap>(
     if (!node) {
       continue;
     }
-    for (let index = node.childIds.length - 1; index >= 0; index -= 1) {
+    const childIds = getChildIds(current.nodeId, node);
+    for (let index = childIds.length - 1; index >= 0; index -= 1) {
       stack.push({
-        nodeId: node.childIds[index]!,
+        nodeId: childIds[index]!,
         depth: current.depth + 1,
       });
     }

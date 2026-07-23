@@ -1390,7 +1390,8 @@ function collectReorderOps<TTypes extends NodeTypeMap>(
   planning: ReturnType<typeof buildPlanningState<TTypes>>,
 ): ReorderChildrenOp[] {
   const reorders: ReorderChildrenOp[] = [];
-  for (const parentId of context.target.nodes.keys()) {
+  const parentIds = [...context.target.nodes.keys()].sort(compareStrings);
+  for (const parentId of parentIds) {
     if (context.replacementCoveredInTarget.has(parentId)) {
       continue;
     }
@@ -1570,7 +1571,8 @@ function collectVisibilityOps<TTypes extends NodeTypeMap>(
   const baseHidden = context.baseState.explicitHidden;
   const targetHidden = context.targetState.explicitHidden;
 
-  for (const [nodeId] of context.target.nodes) {
+  const targetNodeIds = [...context.target.nodes.keys()].sort(compareStrings);
+  for (const nodeId of targetNodeIds) {
     if (nodeId === context.target.rootId) {
       continue;
     }

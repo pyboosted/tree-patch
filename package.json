@@ -4,6 +4,10 @@
   "description": "Immutable, conflict-aware semantic patches for tree-shaped content.",
   "license": "MIT",
   "type": "module",
+  "sideEffects": false,
+  "engines": {
+    "node": ">=18"
+  },
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "files": [

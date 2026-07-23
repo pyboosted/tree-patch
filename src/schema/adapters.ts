@@ -12,6 +12,11 @@ import {
 } from "../core/errors.js";
 import { isPlainObject, setOwnEnumerableValue } from "../core/snapshot.js";
 
+export const ESCAPED_JSON_CODEC_ID = "$tree-patch/json";
+type EscapedPersistedValue = EncodedValue & {
+  $codec: typeof ESCAPED_JSON_CODEC_ID;
+};
+
 export const defaultJsonValueAdapter: ValueAdapter<JsonValue> = {
   equals: (left, right) => deepEqual(left, right),
   hash: (value) => canonicalizeJsonValue(value),
@@ -319,13 +324,19 @@ export function encodePersistedValue<TValue>(
 ): PersistedValue {
   const clonedJson = tryCloneJsonValue(value);
   if (clonedJson.ok) {
-    return clonedJson.value;
+    return escapeCodecEnvelopeShapes(clonedJson.value);
   }
 
   const codec = adapter?.codec;
   if (!codec) {
     throw new MissingCodecError(
       "Cannot persist a non-JSON value without a registered codec.",
+    );
+  }
+  if (codec.codecId === ESCAPED_JSON_CODEC_ID) {
+    throw new UnsupportedRuntimeValueError(
+      `Codec id "${ESCAPED_JSON_CODEC_ID}" is reserved for escaped JSON values.`,
+      { details: { codecId: codec.codecId } },
     );
   }
 
@@ -362,6 +373,68 @@ export function isEncodedValue(value: PersistedValue): value is EncodedValue {
   );
 }
 
+export function isEscapedPersistedValue(
+  value: PersistedValue,
+): value is EscapedPersistedValue {
+  return isEncodedValue(value) && value.$codec === ESCAPED_JSON_CODEC_ID;
+}
+
+function escapeCodecEnvelopeShapes(value: JsonValue): PersistedValue {
+  let root: PersistedValue | undefined;
+  const stack: Array<{
+    value: JsonValue;
+    assign: (value: PersistedValue) => void;
+  }> = [{
+    value,
+    assign: (encoded) => {
+      root = encoded;
+    },
+  }];
+
+  while (stack.length > 0) {
+    const frame = stack.pop()!;
+    if (isEncodedValue(frame.value as PersistedValue)) {
+      frame.assign({
+        $codec: ESCAPED_JSON_CODEC_ID,
+        value: frame.value,
+      });
+      continue;
+    }
+    if (frame.value === null || typeof frame.value !== "object") {
+      frame.assign(frame.value);
+      continue;
+    }
+    if (Array.isArray(frame.value)) {
+      const encoded = new Array<PersistedValue>(frame.value.length);
+      frame.assign(encoded);
+      for (let index = frame.value.length - 1; index >= 0; index -= 1) {
+        stack.push({
+          value: frame.value[index]!,
+          assign: (child) => {
+            encoded[index] = child;
+          },
+        });
+      }
+      continue;
+    }
+
+    const encoded: Record<string, PersistedValue> = {};
+    frame.assign(encoded);
+    const keys = Object.keys(frame.value);
+    for (let index = keys.length - 1; index >= 0; index -= 1) {
+      const key = keys[index]!;
+      stack.push({
+        value: frame.value[key]!,
+        assign: (child) => {
+          setOwnEnumerableValue(encoded, key, child);
+        },
+      });
+    }
+  }
+
+  return root!;
+}
+
 export function decodePersistedValue(
   value: PersistedValue,
   codecs: readonly ValueCodec[] = [],
@@ -391,6 +464,10 @@ export function decodePersistedValue(
     }
     if (isEncodedValue(frame.value)) {
       const encoded = frame.value;
+      if (isEscapedPersistedValue(encoded)) {
+        frame.assign(cloneJsonValue(encoded.value));
+        continue;
+      }
       const codec = codecs.find(
         (candidate) => candidate.codecId === encoded.$codec,
       );

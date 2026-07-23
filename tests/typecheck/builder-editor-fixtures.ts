@@ -109,6 +109,9 @@ editor.node("hero", "Hero").set(["image", "url"], "/img/fr.png");
 editor.node("hero", "Hero").set(["subtitle"], "Limited offer", { expectAbsent: true });
 editor.node("hero", "Hero").set(["style", "fontSize"], 28);
 editor.node("legal", "RichText").set(["html"], "<p>Updated</p>");
+editor.node("hero", "Hero").set(["title"], "Last writer wins", {
+  unguarded: true,
+});
 
 // @ts-expect-error removing the whole attrs root is not a valid operation
 builder.node("hero", "Hero").remove([]);

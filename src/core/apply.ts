@@ -25,7 +25,7 @@ import type {
   ValidationResult,
 } from "./types.js";
 import { finalizeMap, finalizeSet } from "./cow.js";
-import { InvalidPointerError, MissingCodecError } from "./errors.js";
+import { MissingCodecError } from "./errors.js";
 import {
   createReadonlyMapView,
   deepFreezePlainData,
@@ -43,6 +43,7 @@ import {
 import {
   cloneRuntimeValue,
   deepEqual,
+  isEscapedPersistedValue,
   isEncodedValue,
 } from "../schema/adapters.js";
 import { parseJsonPointer, resolvePointer } from "../schema/pointers.js";
@@ -261,24 +262,21 @@ function collectCurrentSubtreeNodeIds<TTypes extends NodeTypeMap>(
       continue;
     }
     collected.push(currentId);
-    const order = context.siblingOrders.get(currentId);
-    if (!order) {
-      for (let index = node.childIds.length - 1; index >= 0; index -= 1) {
-        stack.push(node.childIds[index]!);
-      }
-      continue;
-    }
-    const childIds: NodeId[] = [];
-    let childId = order.first;
-    while (childId !== null) {
-      childIds.push(childId);
-      childId = order.next.get(childId) ?? null;
-    }
+    const childIds = getCurrentChildIds(context, currentId, node);
     for (let index = childIds.length - 1; index >= 0; index -= 1) {
       stack.push(childIds[index]!);
     }
   }
   return collected;
+}
+
+function getCurrentChildIds<TTypes extends NodeTypeMap>(
+  context: ExecutionContext<TTypes>,
+  nodeId: NodeId,
+  node: IndexedNode<TTypes>,
+): readonly NodeId[] {
+  const order = context.siblingOrders.get(nodeId);
+  return order ? collectSiblingOrderIds(order) : node.childIds;
 }
 
 function flushSiblingOrders<TTypes extends NodeTypeMap>(
@@ -505,10 +503,11 @@ function decodeSerializedAttrs<TTypes extends NodeTypeMap>(
   let root: unknown;
   type Frame =
     | {
-        kind: "value";
-        value: PersistedValue;
-        pointer: JsonPointer;
-        assign: (value: unknown) => void;
+      kind: "value";
+      value: PersistedValue;
+      pointer: JsonPointer;
+      decodeEnvelopes: boolean;
+      assign: (value: unknown) => void;
       }
     | {
         kind: "clone";
@@ -520,6 +519,7 @@ function decodeSerializedAttrs<TTypes extends NodeTypeMap>(
     kind: "value",
     value,
     pointer,
+    decodeEnvelopes: true,
     assign: (decoded) => {
       root = decoded;
     },
@@ -535,7 +535,20 @@ function decodeSerializedAttrs<TTypes extends NodeTypeMap>(
       ));
       continue;
     }
-    if (isEncodedValue(frame.value)) {
+    if (
+      frame.decodeEnvelopes &&
+      isEscapedPersistedValue(frame.value)
+    ) {
+      stack.push({
+        kind: "value",
+        value: frame.value.value,
+        pointer: frame.pointer,
+        decodeEnvelopes: false,
+        assign: frame.assign,
+      });
+      continue;
+    }
+    if (frame.decodeEnvelopes && isEncodedValue(frame.value)) {
       frame.assign(cloneOwnedRuntimeValue(
         overlay,
         nodeType,
@@ -571,6 +584,7 @@ function decodeSerializedAttrs<TTypes extends NodeTypeMap>(
           kind: "value",
           value: frame.value[index] as PersistedValue,
           pointer: joinJsonPointer(frame.pointer, index),
+          decodeEnvelopes: frame.decodeEnvelopes,
           assign: (child) => {
             decoded[index] = child;
           },
@@ -597,6 +611,7 @@ function decodeSerializedAttrs<TTypes extends NodeTypeMap>(
           kind: "value",
           value: frame.value[key] as PersistedValue,
           pointer: joinJsonPointer(frame.pointer, key),
+          decodeEnvelopes: frame.decodeEnvelopes,
           assign: (child) => {
             setOwnEnumerableValue(decoded, key, child);
           },
@@ -1728,7 +1743,12 @@ function applyMoveNode<TTypes extends NodeTypeMap>(
 
   if (currentParentId !== op.newParentId) {
     const nextDepth = (overlay.index.depthById.get(newParent.id) ?? 0) + 1;
-    reindexSubtreeDepths(overlay, op.nodeId, nextDepth);
+    reindexSubtreeDepths(
+      overlay,
+      op.nodeId,
+      nextDepth,
+      (nodeId, current) => getCurrentChildIds(context, nodeId, current),
+    );
   }
   invalidateSubtreeHashes(overlay, currentParentId);
   invalidateSubtreeHashes(overlay, newParent.id);

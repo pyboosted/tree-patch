@@ -222,6 +222,69 @@ test("builder can guard an absent field explicitly", () => {
   );
 });
 
+test("source-backed builder field edits are guarded unless explicitly unguarded", () => {
+  const source = createSourceTree();
+  const guarded = patchBuilder<ContentTypes>({
+    source,
+    patchId: "automatic-field-guards",
+  })
+    .node("hero", "Hero")
+    .set(["title"], "Promotions")
+    .remove(["subtitle"])
+    .node("root", "Page")
+    .set(["locale"], "fr")
+    .build();
+
+  assert.deepEqual(guarded.ops[0]?.guards, [{
+    kind: "attrEquals",
+    nodeId: "hero",
+    path: "/title",
+    value: "Summer Sale",
+  }]);
+  assert.deepEqual(guarded.ops[1]?.guards, [{
+    kind: "attrEquals",
+    nodeId: "hero",
+    path: "/subtitle",
+    value: "Free shipping",
+  }]);
+  assert.deepEqual(guarded.ops[2]?.guards, [{
+    kind: "attrAbsent",
+    nodeId: "root",
+    path: "/locale",
+  }]);
+
+  const changedDocument = createSourceDocument();
+  (changedDocument.root.children[0]!.attrs as ContentTypes["Hero"]).title =
+    "Changed upstream";
+  const changedSource = createDocument(changedDocument, {
+    schema: schemaWithCodec,
+  });
+  assert.equal(applyPatch(changedSource, guarded).status, "conflict");
+
+  const unguarded = patchBuilder<ContentTypes>({
+    source,
+    patchId: "last-writer-wins",
+  })
+    .node("hero", "Hero")
+    .set(["title"], "Promotions", { unguarded: true })
+    .remove(["subtitle"], { unguarded: true })
+    .build();
+  assert.equal(unguarded.ops[0]?.guards, undefined);
+  assert.equal(unguarded.ops[1]?.guards, undefined);
+  assert.equal(applyPatch(changedSource, unguarded).status, "applied");
+
+  assert.throws(
+    () =>
+      patchBuilder<ContentTypes>({ source, patchId: "ambiguous-guard-policy" })
+        .node("hero", "Hero")
+        .set(["title"], "Promotions", {
+          expect: "Summer Sale",
+          unguarded: true,
+        }),
+    MalformedPatchError,
+  );
+});
+
 test("builder path kinds distinguish missing arrays from numeric object keys", () => {
   const source = createSourceTree();
   const patch = patchBuilder<ContentTypes>({ source, patchId: "nested-containers" })

@@ -8,6 +8,7 @@ import { isPlainObject, setOwnEnumerableValue } from "../core/snapshot.js";
 import {
   deepEqual,
   encodePersistedValue,
+  isEncodedValue,
   isJsonValue,
   tryCloneJsonValue,
 } from "./adapters.js";
@@ -121,6 +122,10 @@ export function encodeRuntimeValueForPointer<TTypes extends NodeTypeMap>(
     }
 
     const adapter = getValueAdapterForSchemas(schemas, nodeType, frame.pointer);
+    if (isEncodedValue(frame.value as PersistedValue)) {
+      frame.assign(encodePersistedValue(frame.value));
+      continue;
+    }
     if (adapter && !isJsonValue(frame.value) && adapter.codec) {
       frame.assign(encodePersistedValue(frame.value, adapter as never));
       continue;

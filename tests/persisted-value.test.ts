@@ -68,6 +68,34 @@ test("persisted values pass JSON through and use codecs for non-JSON values", ()
   assert.equal(nested.event.at.toISOString(), "2026-03-12T00:00:00.000Z");
 });
 
+test("persisted values escape codec-shaped JSON user data", () => {
+  const userValue = {
+    payload: {
+      $codec: "user-tag",
+      value: {
+        title: "ordinary JSON",
+      },
+    },
+    reservedLookingPayload: {
+      $codec: "$tree-patch/json",
+      value: "also ordinary JSON",
+    },
+  };
+
+  const encoded = encodePersistedValue(userValue);
+  assert.deepEqual(encoded, {
+    payload: {
+      $codec: "$tree-patch/json",
+      value: userValue.payload,
+    },
+    reservedLookingPayload: {
+      $codec: "$tree-patch/json",
+      value: userValue.reservedLookingPayload,
+    },
+  });
+  assert.deepEqual(decodePersistedValue(encoded), userValue);
+});
+
 test("persisted values reject missing or unknown codecs", () => {
   assert.throws(
     () =>
@@ -87,6 +115,18 @@ test("persisted values reject missing or unknown codecs", () => {
         [dateCodec],
       ),
     MissingCodecError,
+  );
+
+  assert.throws(
+    () =>
+      encodePersistedValue(new Date("2026-03-12T00:00:00.000Z"), {
+        equals: (left, right) => left.getTime() === right.getTime(),
+        codec: {
+          ...dateCodec,
+          codecId: "$tree-patch/json",
+        },
+      }),
+    UnsupportedRuntimeValueError,
   );
 });
 

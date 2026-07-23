@@ -127,6 +127,68 @@ test("moveNode supports same-parent reorder and cross-parent move while keeping 
   assert.equal(result.tree.index.positionById.get("section"), 2);
 });
 
+test("moving an ancestor reindexes descendants inserted earlier in the patch", () => {
+  const source = createDocument({
+    root: {
+      id: "root",
+      type: "Section",
+      attrs: { label: "root" },
+      children: [
+        {
+          id: "moving",
+          type: "Section",
+          attrs: { label: "moving" },
+          children: [],
+        },
+        {
+          id: "container",
+          type: "Section",
+          attrs: { label: "container" },
+          children: [{
+            id: "level-2",
+            type: "Section",
+            attrs: { label: "level 2" },
+            children: [{
+              id: "level-3",
+              type: "Section",
+              attrs: { label: "level 3" },
+              children: [],
+            }],
+          }],
+        },
+      ],
+    },
+  });
+  const result = applyPatch(source, {
+    format: "tree-patch/v1",
+    patchId: "insert-then-move-ancestor",
+    ops: [
+      {
+        kind: "insertNode",
+        opId: "insert-descendant",
+        parentId: "moving",
+        node: {
+          id: "inserted",
+          type: "Section",
+          attrs: { label: "inserted" },
+          children: [],
+        },
+      },
+      {
+        kind: "moveNode",
+        opId: "move-ancestor",
+        nodeId: "moving",
+        newParentId: "level-3",
+      },
+    ],
+  });
+
+  assert.equal(result.status, "applied");
+  assert.equal(result.tree.index.depthById.get("moving"), 4);
+  assert.equal(result.tree.index.depthById.get("inserted"), 5);
+  assert.equal(result.tree.index.parentById.get("inserted"), "moving");
+});
+
 test("moveNode rejects patch-owned parent moves, root moves, cycles, and missing anchors", () => {
   const source = createSourceTree();
   const patch: TreePatch = {

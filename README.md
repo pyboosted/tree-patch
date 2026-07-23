@@ -66,6 +66,11 @@ are intentionally version-specific: a persisted guard produced by a different
 hash algorithm conflicts safely instead of being interpreted as the current
 digest.
 
+These 128-bit hashes are deterministic, non-cryptographic fingerprints. Child
+hashes use an incrementally updatable additive aggregate. Guards therefore
+provide probabilistic conflict detection for trusted CMS/localization
+workflows; they are not intended to resist adversarial collision construction.
+
 ## Quick Start
 
 ```ts
@@ -172,7 +177,9 @@ editor.node("legal", "RichText").hide();
 const patch = editor.build();
 ```
 
-When a field must still be absent, use an explicit absence guard:
+When a source tree is available, `set()` and `remove()` automatically guard the
+current field value (or its absence). An explicit expectation also validates
+the builder state immediately:
 
 ```ts
 editor.node("hero", "Hero").set(["subtitle"], "Limited offer", {
@@ -180,7 +187,9 @@ editor.node("hero", "Hero").set(["subtitle"], "Limited offer", {
 });
 ```
 
-This prevents rebasing the patch over an independently added source value.
+Use `{ unguarded: true }` only when last-writer-wins behavior is intentional.
+Builders without a source cannot infer automatic guards, so `expect` and
+`expectAbsent` remain available for hand-authored patches.
 
 Numeric builder path segments retain their array intent when intermediate
 containers are absent:
@@ -334,7 +343,12 @@ Notes:
 - in the default `clone` ownership mode, adapter-backed values returned from snapshots and materialized trees are defensive clones
 - `assumeImmutable` skips defensive cloning and is a caller promise that all supplied and returned runtime values remain immutable
 - adapter and codec descriptors are validated and snapshotted when the schema is compiled
-- the envelope shape `{ $codec, value }` is reserved for encoded persisted values
+- the envelope shape `{ $codec, value }` is reserved for encoded persisted values; `diffTrees()`, builders, and `encodePersistedValue()` automatically escape JSON user data with that exact shape using the reserved codec id `"$tree-patch/json"` (hand-authored patches should use the helper rather than emitting the ambiguous raw shape)
+
+Patch ownership is provenance, not editable content. It participates in derived
+revisions and controls which structural operations are legal, but `diffTrees()`
+does not emit operations whose only effect would be changing ownership.
+Applying such a diff preserves the base tree's ownership state.
 
 Typed attribute paths include the empty path for replacing the complete `attrs`
 value and are inferred up to eight segments deep. Removing the complete
@@ -376,11 +390,12 @@ It uses standard modern JavaScript features such as:
 
 - `Map` / `Set`
 - `WeakMap`
-- `Proxy`
 - `structuredClone`
 - `String.prototype.replaceAll`
 
-That makes it suitable for modern browsers, Bun, Deno, and Node ESM environments. Older browsers may require transpilation or polyfills.
+That makes it suitable for modern browsers, Bun, Deno, and Node ESM
+environments. The npm package declares Node 18 or newer. Older browsers may
+require transpilation or polyfills.
 
 ## Development
 

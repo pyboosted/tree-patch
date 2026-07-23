@@ -12,6 +12,7 @@ import {
   createReadonlySetView,
   isPlainObject,
 } from "../core/snapshot.js";
+import { ESCAPED_JSON_CODEC_ID } from "./adapters.js";
 import { pathToPointer, parseJsonPointer } from "./pointers.js";
 
 export interface CompiledNodeRuntimeSpec {
@@ -29,18 +30,6 @@ const EMPTY_NODE_SPEC: CompiledNodeRuntimeSpec = Object.freeze({
   atomicPointerSet: createReadonlySetView(new Set<JsonPointer>()),
   adapters: createReadonlyMapView(new Map<JsonPointer, ValueAdapter<unknown>>()),
 });
-
-function overlaps(left: JsonPointer, right: JsonPointer): boolean {
-  if (left === right) {
-    return true;
-  }
-
-  if (left === "" || right === "") {
-    return true;
-  }
-
-  return left.startsWith(`${right}/`) || right.startsWith(`${left}/`);
-}
 
 function compileNodeRuntimeSpec<TAttrs>(
   nodeType: string,
@@ -75,14 +64,29 @@ function compileNodeRuntimeSpec<TAttrs>(
     parseJsonPointer(pointer);
   }
 
-  for (let index = 0; index < atomicPointers.length - 1; index += 1) {
-    const current = atomicPointers[index]!;
-    const next = atomicPointers[index + 1]!;
-    if (overlaps(current, next)) {
+  const atomicPointerSet = new Set(atomicPointers);
+  for (const pointer of atomicPointers) {
+    let ancestor: JsonPointer | undefined;
+    if (pointer !== "" && atomicPointerSet.has("")) {
+      ancestor = "" as JsonPointer;
+    } else {
+      for (
+        let separator = pointer.indexOf("/", 1);
+        separator !== -1;
+        separator = pointer.indexOf("/", separator + 1)
+      ) {
+        const candidate = pointer.slice(0, separator) as JsonPointer;
+        if (atomicPointerSet.has(candidate)) {
+          ancestor = candidate;
+          break;
+        }
+      }
+    }
+    if (ancestor !== undefined) {
       throw new InvalidSchemaError(
-        `Atomic paths "${current}" and "${next}" overlap on node type "${nodeType}".`,
+        `Atomic paths "${ancestor}" and "${pointer}" overlap on node type "${nodeType}".`,
         {
-          details: { nodeType, left: current, right: next },
+          details: { nodeType, left: ancestor, right: pointer },
         },
       );
     }
@@ -138,6 +142,12 @@ function compileNodeRuntimeSpec<TAttrs>(
         serialize: checkedAdapter.codec!.serialize,
         deserialize: checkedAdapter.codec!.deserialize,
       });
+      if (codec.codecId === ESCAPED_JSON_CODEC_ID) {
+        throw new InvalidSchemaError(
+          `Codec id "${ESCAPED_JSON_CODEC_ID}" is reserved for escaped JSON values.`,
+          { details: { nodeType, pointer, codecId: codec.codecId } },
+        );
+      }
     }
 
     adapters.set(pointer as JsonPointer, Object.freeze({
@@ -148,7 +158,6 @@ function compileNodeRuntimeSpec<TAttrs>(
     }));
   }
 
-  const atomicPointerSet = new Set(atomicPointers);
   return Object.freeze({
     atomicPointers: Object.freeze(atomicPointers),
     atomicPointerSet: createReadonlySetView(atomicPointerSet),

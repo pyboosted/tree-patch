@@ -63,6 +63,24 @@ test("compileTreeSchema rejects overlapping atomic paths", () => {
   );
 });
 
+test("compileTreeSchema detects atomic ancestors separated by sorted peers", () => {
+  assert.throws(
+    () =>
+      compileTreeSchema<SchemaTypes>({
+        types: {
+          Hero: {
+            atomicPaths: [
+              ["image"],
+              ["image."],
+              ["image", "url"],
+            ],
+          },
+        },
+      }),
+    InvalidSchemaError,
+  );
+});
+
 test("compileTreeSchema rejects malformed adapter pointers", () => {
   assert.throws(
     () =>
@@ -163,4 +181,27 @@ test("compileTreeSchema rejects malformed adapter descriptors", () => {
       InvalidSchemaError,
     );
   }
+});
+
+test("compileTreeSchema reserves the escaped JSON codec id", () => {
+  assert.throws(
+    () =>
+      compileTreeSchema<SchemaTypes>({
+        types: {
+          Hero: {
+            adapters: {
+              "/image/url": {
+                equals: Object.is,
+                codec: {
+                  codecId: "$tree-patch/json",
+                  serialize: (value: string) => value,
+                  deserialize: (value: string) => value,
+                },
+              },
+            },
+          },
+        },
+      }),
+    InvalidSchemaError,
+  );
 });

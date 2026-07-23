@@ -2,6 +2,7 @@ import { execFileSync } from "node:child_process";
 import {
   mkdtempSync,
   mkdirSync,
+  readdirSync,
   readFileSync,
   rmSync,
   writeFileSync,
@@ -79,6 +80,51 @@ try {
   );
   if (installedManifest.name !== "@hexie/tree-patch") {
     throw new Error("Installed package manifest could not be verified.");
+  }
+  if (
+    installedManifest.sideEffects !== false ||
+    installedManifest.engines?.node !== ">=18"
+  ) {
+    throw new Error("Installed package manifest is missing runtime metadata.");
+  }
+
+  const installedDist = join(
+    consumerDirectory,
+    "node_modules",
+    "@hexie",
+    "tree-patch",
+    "dist",
+  );
+  const pendingDirectories = [installedDist];
+  const sourceMapPaths = [];
+  while (pendingDirectories.length > 0) {
+    const directory = pendingDirectories.pop();
+    for (const entry of readdirSync(directory, { withFileTypes: true })) {
+      const path = join(directory, entry.name);
+      if (entry.isDirectory()) {
+        pendingDirectories.push(path);
+      } else if (entry.name.endsWith(".map")) {
+        sourceMapPaths.push(path);
+      }
+    }
+  }
+  if (sourceMapPaths.length === 0) {
+    throw new Error("Installed package does not contain source maps.");
+  }
+  for (const sourceMapPath of sourceMapPaths) {
+    const sourceMap = JSON.parse(readFileSync(sourceMapPath, "utf8"));
+    if (
+      !Array.isArray(sourceMap.sources) ||
+      !Array.isArray(sourceMap.sourcesContent) ||
+      sourceMap.sourcesContent.length !== sourceMap.sources.length ||
+      sourceMap.sourcesContent.some(
+        (source) => typeof source !== "string",
+      )
+    ) {
+      throw new Error(
+        `Installed source map ${sourceMapPath} does not embed its sources.`,
+      );
+    }
   }
 
   const entrypoint = pathToFileURL(

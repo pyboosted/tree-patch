@@ -181,6 +181,114 @@ test("diffTrees returns a deterministic empty patch for equal trees", () => {
   assert.match(first.patchId, /^diff:/);
 });
 
+test("reorder and visibility operation order ignores node map history", () => {
+  const source = createDocument<ContentTypes>({
+    root: {
+      id: "root",
+      type: "Page",
+      attrs: {},
+      children: [],
+    },
+  });
+  const parentNode = (parentId: string) => ({
+    id: parentId,
+    type: "Section" as const,
+    attrs: { label: parentId },
+    children: [
+      {
+        id: `${parentId}-a`,
+        type: "Section" as const,
+        attrs: { label: "a" },
+        children: [],
+      },
+      {
+        id: `${parentId}-b`,
+        type: "Section" as const,
+        attrs: { label: "b" },
+        children: [],
+      },
+    ],
+  });
+  const buildBase = (reverseHistory: boolean) => {
+    const firstId = reverseHistory ? "p2" : "p1";
+    const secondId = reverseHistory ? "p1" : "p2";
+    const result = applyPatch(source, {
+      format: "tree-patch/v1",
+      patchId: `history-${String(reverseHistory)}`,
+      ops: [
+        {
+          kind: "insertNode",
+          opId: `insert-${firstId}`,
+          parentId: "root",
+          node: parentNode(firstId),
+        },
+        {
+          kind: "insertNode",
+          opId: `insert-${secondId}`,
+          parentId: "root",
+          ...(reverseHistory ? { position: { atStart: true } as const } : {}),
+          node: parentNode(secondId),
+        },
+      ],
+    });
+    assert.equal(result.status, "applied");
+    return result.tree;
+  };
+  const buildTarget = (base: ReturnType<typeof buildBase>) => {
+    const result = applyPatch(base, {
+      format: "tree-patch/v1",
+      patchId: "reorder-and-hide",
+      ops: [
+        {
+          kind: "reorderChildren",
+          opId: "reorder-p1",
+          parentId: "p1",
+          childIds: ["p1-b", "p1-a"],
+        },
+        {
+          kind: "reorderChildren",
+          opId: "reorder-p2",
+          parentId: "p2",
+          childIds: ["p2-b", "p2-a"],
+        },
+        {
+          kind: "hideNode",
+          opId: "hide-p1",
+          nodeId: "p1",
+        },
+        {
+          kind: "hideNode",
+          opId: "hide-p2",
+          nodeId: "p2",
+        },
+      ],
+    });
+    assert.equal(result.status, "applied");
+    return result.tree;
+  };
+
+  const baseA = buildBase(false);
+  const baseB = buildBase(true);
+  assert.deepEqual(
+    baseA.nodes.get("root")?.childIds,
+    baseB.nodes.get("root")?.childIds,
+  );
+
+  const patchA = diffTrees(baseA, buildTarget(baseA));
+  const patchB = diffTrees(baseB, buildTarget(baseB));
+  assert.deepEqual(patchA.ops, patchB.ops);
+  assert.deepEqual(
+    patchA.ops.map((op) =>
+      `${op.kind}:${"parentId" in op ? op.parentId : "nodeId" in op ? op.nodeId : ""}`),
+    [
+      "reorderChildren:p1",
+      "reorderChildren:p2",
+      "hideNode:p1",
+      "hideNode:p2",
+    ],
+  );
+});
+
 test("diffTrees hides missing source-backed nodes by default and can reject that transform", () => {
   const base = createTree(createBaseDocument("rev-1"));
   const target = createTree({

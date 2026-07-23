@@ -5,6 +5,7 @@
     "declaration": false,
     "declarationMap": false,
     "sourceMap": false,
+    "inlineSources": false,
     "outDir": ".typecheck",
     "rootDir": "."
   },
@@ -13,4 +14,3 @@
     "tests/typecheck/**/*.ts"
   ]
 }
-
