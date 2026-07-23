@@ -188,6 +188,7 @@ export type Guard =
   | { kind: "attrEquals"; nodeId: NodeId; path: JsonPointer; value: PersistedValue }
   | { kind: "attrHash"; nodeId: NodeId; path: JsonPointer; hash: string }
   | { kind: "subtreeHash"; nodeId: NodeId; hash: string }
+  | { kind: "childOrderHash"; parentId: NodeId; hash: string }
   | { kind: "parentIs"; nodeId: NodeId; parentId: NodeId | null }
   | { kind: "positionAtStart"; nodeId: NodeId }
   | { kind: "positionAtEnd"; nodeId: NodeId }
@@ -243,6 +244,14 @@ export interface MoveNodeOp {
   guards?: readonly Guard[];
 }
 
+export interface ReorderChildrenOp {
+  kind: "reorderChildren";
+  opId: string;
+  parentId: NodeId;
+  childIds: readonly NodeId[];
+  guards?: readonly Guard[];
+}
+
 export interface ReplaceSubtreeOp {
   kind: "replaceSubtree";
   opId: string;
@@ -265,6 +274,7 @@ export type PatchOp =
   | ShowNodeOp
   | InsertNodeOp
   | MoveNodeOp
+  | ReorderChildrenOp
   | ReplaceSubtreeOp
   | RemoveNodeOp;
 

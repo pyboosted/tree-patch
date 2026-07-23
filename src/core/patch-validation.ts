@@ -231,6 +231,17 @@ function assertGuard(guard: unknown, location: string): asserts guard is Guard {
         });
       }
       return;
+    case "childOrderHash":
+      if (
+        typeof candidate.parentId !== "string" ||
+        typeof candidate.hash !== "string"
+      ) {
+        throw new MalformedPatchError(
+          `${location} must include string parentId and hash.`,
+          { details: { location } },
+        );
+      }
+      return;
     case "parentIs":
       if (
         typeof candidate.nodeId !== "string" ||
@@ -345,6 +356,25 @@ function assertPatchOp(op: unknown, index: number): asserts op is PatchOp {
       }
       normalizePosition(candidate.position, `${location}.position`);
       return;
+    case "reorderChildren": {
+      if (
+        typeof candidate.parentId !== "string" ||
+        !Array.isArray(candidate.childIds) ||
+        candidate.childIds.some((childId) => typeof childId !== "string")
+      ) {
+        throw new MalformedPatchError(
+          `${location} must include string parentId and a string childIds array.`,
+          { details: { location } },
+        );
+      }
+      if (new Set(candidate.childIds).size !== candidate.childIds.length) {
+        throw new MalformedPatchError(
+          `${location}.childIds must not contain duplicate node ids.`,
+          { details: { location } },
+        );
+      }
+      return;
+    }
     case "replaceSubtree":
       if (typeof candidate.nodeId !== "string") {
         throw new MalformedPatchError(`${location}.nodeId must be a string.`, {

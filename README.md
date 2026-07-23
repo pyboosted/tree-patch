@@ -16,7 +16,8 @@ The runtime has zero Node/Bun-specific dependencies. The built library is intend
 - Typed tree model with `attrs` linked to node `type`
 - Immutable indexed snapshots via `createDocument()`
 - Conflict-aware patch application with field-scoped guards
-- Structural operations: insert, move, replace subtree, remove, hide/show
+- Structural operations: insert, move, bulk child reorder, replace subtree,
+  remove, hide/show
 - Deterministic diff generation and patch rebasing
 - Conflict-resolution sessions with per-conflict `takeBase` / `keepLocal`
 - Typed patch authoring with `patchBuilder()` and `createEditor()`

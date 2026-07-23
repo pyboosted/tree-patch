@@ -75,6 +75,8 @@ test("large reverse reorders diff and apply through linked sibling planning", ()
   const patch = diffTrees(base, target);
   const result = applyPatch(base, patch);
 
+  assert.equal(patch.ops.length, 1);
+  assert.equal(patch.ops[0]?.kind, "reorderChildren");
   assert.equal(result.status, "applied");
   assert.equal(result.materialized.children[0]?.id, "leaf-4999");
   assert.equal(result.materialized.children.at(-1)?.id, "leaf-0");

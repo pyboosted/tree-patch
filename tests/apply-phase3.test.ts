@@ -9,7 +9,12 @@ import {
   type TreeDocument,
   type TreePatch,
 } from "../src/index.js";
-import { getNodeHash, getPathHash, getSubtreeHash } from "../src/core/hash.js";
+import {
+  getChildOrderHash,
+  getNodeHash,
+  getPathHash,
+  getSubtreeHash,
+} from "../src/core/hash.js";
 
 type ContentTypes = {
   Page: {};
@@ -202,6 +207,58 @@ test("moveNode no-op reorders succeed without changing subtree hashes", () => {
   assert.equal(result.status, "applied");
   assert.deepEqual(result.materialized.children.map((child) => child.id), ["hero", "legal", "section"]);
   assert.equal(getSubtreeHash(result.tree, "root"), sourceRootHash);
+});
+
+test("reorderChildren applies one guarded bulk permutation and rejects invalid sets", () => {
+  const source = createSourceTree();
+  const reordered = applyPatch(source, {
+    format: "tree-patch/v1",
+    patchId: "bulk-reorder",
+    ops: [{
+      kind: "reorderChildren",
+      opId: "reverse-root",
+      parentId: "root",
+      childIds: ["section", "legal", "hero"],
+      guards: [{
+        kind: "childOrderHash",
+        parentId: "root",
+        hash: getChildOrderHash(["hero", "legal", "section"]),
+      }],
+    }],
+  });
+  assert.equal(reordered.status, "applied");
+  assert.deepEqual(
+    reordered.tree.nodes.get("root")?.childIds,
+    ["section", "legal", "hero"],
+  );
+  assert.equal(reordered.tree.index.positionById.get("hero"), 2);
+
+  const mismatched = applyPatch(source, {
+    format: "tree-patch/v1",
+    patchId: "wrong-child-set",
+    ops: [{
+      kind: "reorderChildren",
+      opId: "drop-child",
+      parentId: "root",
+      childIds: ["hero", "legal"],
+    }],
+  });
+  assert.equal(mismatched.status, "conflict");
+  assert.equal(mismatched.conflicts[0]?.kind, "ParentMismatch");
+
+  assert.throws(
+    () => applyPatch(source, {
+      format: "tree-patch/v1",
+      patchId: "duplicate-child",
+      ops: [{
+        kind: "reorderChildren",
+        opId: "duplicate",
+        parentId: "root",
+        childIds: ["hero", "hero", "section"],
+      }],
+    }),
+    MalformedPatchError,
+  );
 });
 
 test("replaceSubtree preserves parent and position, allows patch-owned descendant reuse, and removed descendants become missing", () => {

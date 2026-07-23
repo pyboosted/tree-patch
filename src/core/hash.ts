@@ -415,6 +415,13 @@ export function getTreeRevisionHash<TTypes extends NodeTypeMap>(
   ])}`;
 }
 
+export function getChildOrderHash(childIds: Iterable<NodeId>): string {
+  return versionHash(hashStableParts((function* () {
+    yield "child-order";
+    yield* childIds;
+  })()));
+}
+
 export function getPathHash<TTypes extends NodeTypeMap>(
   tree: IndexedTree<TTypes>,
   nodeId: string,

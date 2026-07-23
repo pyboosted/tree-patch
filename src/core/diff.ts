@@ -12,6 +12,7 @@ import type {
   PatchOp,
   RemoveAttrOp,
   RemoveNodeOp,
+  ReorderChildrenOp,
   RebaseOptions,
   RebaseResult,
   ReplaceSubtreeOp,
@@ -27,6 +28,7 @@ import {
 import { executePatchInternal } from "./apply.js";
 import { assertPatchEnvelope } from "./patch-validation.js";
 import {
+  getChildOrderHash,
   getNodeHash,
   getPathHash,
   getSubtreeHash,
@@ -1341,6 +1343,55 @@ function collectMoveOps<TTypes extends NodeTypeMap>(
   return moves;
 }
 
+function collectReorderOps<TTypes extends NodeTypeMap>(
+  context: DiffContext<TTypes>,
+  planning: ReturnType<typeof buildPlanningState<TTypes>>,
+): ReorderChildrenOp[] {
+  const reorders: ReorderChildrenOp[] = [];
+  const parentIds = [...context.target.nodes.keys()].sort(compareStrings);
+
+  for (const parentId of parentIds) {
+    if (context.replacementCoveredInTarget.has(parentId)) {
+      continue;
+    }
+    const baseParent = context.base.nodes.get(parentId);
+    const targetParent = context.target.nodes.get(parentId);
+    if (
+      !baseParent ||
+      !targetParent ||
+      hasSameNodeOrder(baseParent.childIds, targetParent.childIds) ||
+      baseParent.childIds.length !== targetParent.childIds.length
+    ) {
+      continue;
+    }
+
+    const baseChildIds = new Set(baseParent.childIds);
+    if (!targetParent.childIds.every((childId) => baseChildIds.has(childId))) {
+      continue;
+    }
+
+    reorders.push({
+      kind: "reorderChildren",
+      opId: context.opIds("reorder", parentId),
+      parentId,
+      childIds: [...targetParent.childIds],
+      guards: [{
+        kind: "childOrderHash",
+        parentId,
+        hash: getChildOrderHash(baseParent.childIds),
+      }],
+    });
+    initializePlanningChildren(
+      planning,
+      parentId,
+      targetParent.childIds,
+    );
+    planning.mutatedParents.add(parentId);
+  }
+
+  return reorders;
+}
+
 function collectAttrOps<TTypes extends NodeTypeMap>(
   context: DiffContext<TTypes>,
 ): Array<SetAttrOp | RemoveAttrOp> {
@@ -1639,6 +1690,7 @@ export function diffTrees<TTypes extends NodeTypeMap>(
 
   const planning = buildPlanningState(base, target);
   const inserts = collectInsertOps(context, planning);
+  const reorders = collectReorderOps(context, planning);
   const moves = collectMoveOps(context, planning);
   const attrOps = collectAttrOps(context);
   const replacements = collectReplacementOps(context);
@@ -1650,7 +1702,7 @@ export function diffTrees<TTypes extends NodeTypeMap>(
     format: "tree-patch/v1",
     patchId: buildPatchId(base, target),
     ...(base.revision !== undefined ? { baseRevision: base.revision } : {}),
-    ops: [...inserts, ...moves, ...attrOps, ...replacements, ...replacementInserts, ...visibility, ...removals],
+    ops: [...inserts, ...reorders, ...moves, ...attrOps, ...replacements, ...replacementInserts, ...visibility, ...removals],
   };
 }
 

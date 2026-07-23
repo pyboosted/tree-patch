@@ -64,6 +64,7 @@ export type {
   RebaseResult,
   RemoveAttrOp,
   RemoveNodeOp,
+  ReorderChildrenOp,
   ResolutionBuildResult,
   ReplaceSubtreeOp,
   RevisionStatus,

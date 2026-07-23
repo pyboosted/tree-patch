@@ -34,6 +34,7 @@ import {
 } from "./snapshot.js";
 import { attachTreeState, getTreeState } from "./state.js";
 import {
+  getChildOrderHash,
   getPathHash,
   getSubtreeHash,
   getTreeRevisionHash,
@@ -339,6 +340,16 @@ function clearSiblingOrders<TTypes extends NodeTypeMap>(
 ): void {
   flushSiblingOrders(context);
   context.siblingOrders.clear();
+}
+
+function collectSiblingOrderIds(order: MutableSiblingOrder): NodeId[] {
+  const childIds: NodeId[] = [];
+  let current = order.first;
+  while (current !== null) {
+    childIds.push(current);
+    current = order.next.get(current) ?? null;
+  }
+  return childIds;
 }
 
 function computeRevisionStatus(
@@ -919,6 +930,41 @@ function evaluateGuard<TTypes extends NodeTypeMap>(
             "GuardFailed",
             `Guard subtreeHash failed for node "${guard.nodeId}".`,
             { nodeId: guard.nodeId, expected: guard.hash, actual },
+          ),
+        };
+      }
+      return { ok: true };
+    }
+    case "childOrderHash": {
+      const parent = overlay.nodes.get(guard.parentId);
+      if (!parent) {
+        return {
+          ok: false,
+          conflict: toConflict(
+            opId,
+            "GuardFailed",
+            `Guard childOrderHash failed because parent "${guard.parentId}" is missing.`,
+            { nodeId: guard.parentId },
+          ),
+        };
+      }
+
+      const childIds = collectSiblingOrderIds(
+        getSiblingOrder(context, guard.parentId),
+      );
+      const actual = getChildOrderHash(childIds);
+      if (actual !== guard.hash) {
+        return {
+          ok: false,
+          conflict: toConflict(
+            opId,
+            "GuardFailed",
+            `Guard childOrderHash failed for parent "${guard.parentId}".`,
+            {
+              nodeId: guard.parentId,
+              expected: guard.hash,
+              actual,
+            },
           ),
         };
       }
@@ -1644,6 +1690,67 @@ function applyReplaceSubtree<TTypes extends NodeTypeMap>(
   return { ok: true };
 }
 
+function applyReorderChildren<TTypes extends NodeTypeMap>(
+  context: ExecutionContext<TTypes>,
+  op: Extract<PatchOp, { kind: "reorderChildren" }>,
+): OperationResult {
+  const parent = getNode(context.overlay, op.parentId);
+  if (!parent) {
+    return {
+      ok: false,
+      conflict: toConflict(
+        op.opId,
+        "NodeMissing",
+        `Parent node "${op.parentId}" does not exist.`,
+        { nodeId: op.parentId },
+      ),
+    };
+  }
+
+  const guards = evaluateGuards(context, op.opId, op.guards);
+  if (!guards.ok) {
+    return guards;
+  }
+
+  const order = getSiblingOrder(context, op.parentId);
+  const currentIds = collectSiblingOrderIds(order);
+  const requestedIds = new Set(op.childIds);
+  if (
+    currentIds.length !== op.childIds.length ||
+    currentIds.some((childId) => !requestedIds.has(childId))
+  ) {
+    return {
+      ok: false,
+      conflict: toConflict(
+        op.opId,
+        "ParentMismatch",
+        `Reordering "${op.parentId}" requires exactly its current child set.`,
+        {
+          nodeId: op.parentId,
+          expected: currentIds,
+          actual: op.childIds,
+        },
+      ),
+    };
+  }
+  if (currentIds.every((childId, index) => childId === op.childIds[index])) {
+    return { ok: true };
+  }
+
+  order.previous.clear();
+  order.next.clear();
+  order.first = op.childIds[0] ?? null;
+  order.last = op.childIds.at(-1) ?? null;
+  for (let index = 0; index < op.childIds.length; index += 1) {
+    const childId = op.childIds[index]!;
+    order.previous.set(childId, op.childIds[index - 1] ?? null);
+    order.next.set(childId, op.childIds[index + 1] ?? null);
+  }
+  order.dirty = true;
+  invalidateSubtreeHashes(context.overlay, parent.id);
+  return { ok: true };
+}
+
 function applyRemoveNode<TTypes extends NodeTypeMap>(
   context: ExecutionContext<TTypes>,
   op: Extract<PatchOp, { kind: "removeNode" }>,
@@ -1720,6 +1827,8 @@ function applyOperation<TTypes extends NodeTypeMap>(
       return applyInsertNode(context, op);
     case "moveNode":
       return applyMoveNode(context, op);
+    case "reorderChildren":
+      return applyReorderChildren(context, op);
     case "replaceSubtree":
       return applyReplaceSubtree(context, op);
     case "removeNode":

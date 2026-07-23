@@ -143,7 +143,13 @@ rows.push(measure("apply: leaf attr in 100k tree", () =>
   }).status));
 rows.push(measure("materialize: sparse attr in 100k tree", () =>
   applyPatch(wideBase, widePatch).materialized.id));
-const reorderPatch = diffTrees(reorderBase, reorderTarget);
+let reorderPatch;
+rows.push(measure("diff: reverse 10k siblings", () => {
+  reorderPatch = diffTrees(reorderBase, reorderTarget);
+  return reorderPatch.ops.length;
+}));
+rows.push(measure("encode: reverse 10k patch bytes", () =>
+  JSON.stringify(reorderPatch).length));
 rows.push(measure("apply: reverse 10k siblings", () =>
   applyPatch(reorderBase, reorderPatch).status));
 rows.push(measure("diff: 5k chain ratio threshold", () =>
