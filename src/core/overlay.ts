@@ -2,6 +2,7 @@ import type {
   ChildPosition,
   IndexedNode,
   IndexedTree,
+  JsonObject,
   NodeId,
   NodeTypeMap,
   PatchConflict,
@@ -14,7 +15,7 @@ import { attachTreeState, getTreeState, type MutableTreeState } from "./state.js
 
 export interface OverlayState<TTypes extends NodeTypeMap> extends MutableTreeState<TTypes> {
   readonly rootId: NodeId;
-  readonly metadata?: Record<string, unknown>;
+  readonly metadata?: Readonly<JsonObject>;
   treeView: IndexedTree<TTypes>;
   readonly dirtyNodeIds: Set<NodeId>;
   readonly dirtyPathHashNodeIds: Set<NodeId>;

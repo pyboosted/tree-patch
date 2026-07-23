@@ -45,6 +45,7 @@ export type {
   IndexedTree,
   InsertNodeOp,
   JsonPointer,
+  JsonObject,
   JsonValue,
   MaterializeOptions,
   MaterializeResult,

@@ -5,6 +5,10 @@ import {
   applyPatch,
   createDocument,
   diffTrees,
+  MalformedPatchError,
+  MalformedTreeError,
+  patchBuilder,
+  UnsupportedRuntimeValueError,
   type JsonValue,
   type TreePatch,
 } from "../src/index.js";
@@ -94,4 +98,115 @@ test("inherited object properties do not resolve as attribute paths", () => {
   if (result.status === "conflict") {
     assert.equal(result.conflicts[0]?.kind, "PathInvalid");
   }
+});
+
+test("document and patch metadata stay JSON-only and isolated from caller mutation", () => {
+  const metadata = {
+    locale: "en",
+    nested: {
+      tags: ["draft"],
+    },
+  };
+  const tree = createDocument<JsonNodeTypes>({
+    metadata,
+    root: {
+      id: "root",
+      type: "Json",
+      attrs: {},
+      children: [],
+    },
+  });
+
+  metadata.nested.tags.push("mutated");
+  assert.deepEqual(tree.metadata, {
+    locale: "en",
+    nested: {
+      tags: ["draft"],
+    },
+  });
+  assert.throws(
+    () => (tree.metadata!.nested as { tags: string[] }).tags.push("blocked"),
+    TypeError,
+  );
+
+  const patchMetadata = {
+    nested: {
+      labels: ["one"],
+    },
+  };
+  const patch = patchBuilder<JsonNodeTypes>({
+    source: tree,
+    patchId: "metadata",
+    metadata: patchMetadata,
+  }).build();
+  patchMetadata.nested.labels.push("mutated");
+  assert.deepEqual(patch.metadata, {
+    nested: {
+      labels: ["one"],
+    },
+  });
+
+  assert.throws(
+    () =>
+      createDocument<JsonNodeTypes>({
+        metadata: { invalid: new Date() } as never,
+        root: {
+          id: "root",
+          type: "Json",
+          attrs: {},
+          children: [],
+        },
+      }),
+    MalformedTreeError,
+  );
+
+  const cyclic: Record<string, unknown> = {};
+  cyclic.self = cyclic;
+  assert.throws(
+    () =>
+      applyPatch(tree, {
+        format: "tree-patch/v1",
+        patchId: "cyclic-metadata",
+        metadata: cyclic as never,
+        ops: [],
+      }),
+    MalformedPatchError,
+  );
+});
+
+test("codecs must serialize runtime values to JSON", () => {
+  assert.throws(
+    () =>
+      createDocument<{
+        Runtime: { value: Date };
+      }>(
+        {
+          root: {
+            id: "root",
+            type: "Runtime",
+            attrs: { value: new Date() },
+            children: [],
+          },
+        },
+        {
+          schema: {
+            types: {
+              Runtime: {
+                adapters: {
+                  "/value": {
+                    equals: Object.is,
+                    codec: {
+                      codecId: "invalid",
+                      serialize: (() => new Date()) as never,
+                      deserialize: () => new Date(),
+                    },
+                  },
+                },
+              },
+            },
+          },
+        },
+      ),
+    UnsupportedRuntimeValueError,
+  );
 });

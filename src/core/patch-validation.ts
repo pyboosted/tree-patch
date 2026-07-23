@@ -14,6 +14,7 @@ import {
 } from "./errors.js";
 import { isEncodedValue, isJsonValue } from "../schema/adapters.js";
 import { parseJsonPointer } from "../schema/pointers.js";
+import { isPlainObject } from "./snapshot.js";
 
 function validatePersistedValueShape(value: unknown, location: string): void {
   if (isEncodedValue(value as PersistedValue) || isJsonValue(value)) {
@@ -372,6 +373,15 @@ export function assertPatchEnvelope(patch: unknown): asserts patch is TreePatch 
     throw new MalformedPatchError("Patch baseRevision must be a string when provided.", {
       details: { baseRevision: candidate.baseRevision },
     });
+  }
+  if (
+    candidate.metadata !== undefined &&
+    (!isPlainObject(candidate.metadata) || !isJsonValue(candidate.metadata))
+  ) {
+    throw new MalformedPatchError(
+      "Patch metadata must be a JSON-serializable object when provided.",
+      { details: { metadata: candidate.metadata } },
+    );
   }
   if (!Array.isArray(candidate.ops)) {
     throw new MalformedPatchError("Patch ops must be an array.", {

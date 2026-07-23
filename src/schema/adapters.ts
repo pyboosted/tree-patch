@@ -19,29 +19,45 @@ export const defaultJsonValueAdapter: ValueAdapter<JsonValue> = {
 };
 
 export function isJsonValue(value: unknown): value is JsonValue {
-  if (value === null) {
-    return true;
-  }
+  const active = new WeakSet<object>();
+  const stack: Array<{ value: unknown; exit?: true }> = [{ value }];
 
-  switch (typeof value) {
-    case "string":
-    case "boolean":
-      return true;
-    case "number":
-      return Number.isFinite(value);
-    case "object":
-      if (Array.isArray(value)) {
-        return value.every((item) => isJsonValue(item));
-      }
+  while (stack.length > 0) {
+    const frame = stack.pop()!;
+    const current = frame.value;
+    if (frame.exit) {
+      active.delete(current as object);
+      continue;
+    }
 
-      if (!isPlainObject(value)) {
+    if (current === null || typeof current === "string" || typeof current === "boolean") {
+      continue;
+    }
+    if (typeof current === "number") {
+      if (!Number.isFinite(current)) {
         return false;
       }
-
-      return Object.values(value).every((item) => isJsonValue(item));
-    default:
+      continue;
+    }
+    if (typeof current !== "object") {
       return false;
+    }
+    if (!Array.isArray(current) && !isPlainObject(current)) {
+      return false;
+    }
+    if (active.has(current)) {
+      return false;
+    }
+
+    active.add(current);
+    stack.push({ value: current, exit: true });
+    const children = Array.isArray(current) ? current : Object.values(current);
+    for (let index = children.length - 1; index >= 0; index -= 1) {
+      stack.push({ value: children[index] });
+    }
   }
+
+  return true;
 }
 
 export function cloneJsonValue<TValue extends JsonValue>(value: TValue): TValue {
@@ -134,7 +150,16 @@ export function cloneRuntimeValue<TValue>(
   }
 
   if (adapter?.codec) {
-    return adapter.codec.deserialize(adapter.codec.serialize(value));
+    const serialized = adapter.codec.serialize(value);
+    if (!isJsonValue(serialized)) {
+      throw new UnsupportedRuntimeValueError(
+        `Codec "${adapter.codec.codecId}" returned a non-JSON value from serialize().`,
+        {
+          details: { codecId: adapter.codec.codecId, pointer },
+        },
+      );
+    }
+    return adapter.codec.deserialize(serialized);
   }
 
   throw new UnsupportedRuntimeValueError(
@@ -162,9 +187,19 @@ export function encodePersistedValue<TValue>(
     );
   }
 
+  const serialized = codec.serialize(value);
+  if (!isJsonValue(serialized)) {
+    throw new UnsupportedRuntimeValueError(
+      `Codec "${codec.codecId}" returned a non-JSON value from serialize().`,
+      {
+        details: { codecId: codec.codecId },
+      },
+    );
+  }
+
   return {
     $codec: codec.codecId,
-    value: codec.serialize(value),
+    value: serialized,
   } satisfies EncodedValue;
 }
 

@@ -39,6 +39,7 @@ import {
   schemasRequireSemanticComparison,
 } from "../schema/runtime-values.js";
 import { hashStableParts } from "./stable-hash.js";
+import { cloneJsonValue } from "../schema/adapters.js";
 
 interface DiffContext<TTypes extends NodeTypeMap> {
   readonly base: IndexedTree<TTypes>;
@@ -1313,7 +1314,9 @@ export function rebasePatch<TTypes extends NodeTypeMap>(
           format: "tree-patch/v1" as const,
           patchId: patch.patchId,
           ...(newBase.revision !== undefined ? { baseRevision: newBase.revision } : {}),
-          ...(patch.metadata !== undefined ? { metadata: patch.metadata } : {}),
+          ...(patch.metadata !== undefined
+            ? { metadata: cloneJsonValue(patch.metadata) }
+            : {}),
           ops: execution.appliedOps,
         }
       : undefined;

@@ -74,6 +74,8 @@ export type JsonValue =
   | { [key: string]: JsonValue }
   | JsonValue[];
 
+export type JsonObject = { [key: string]: JsonValue };
+
 export interface EncodedValue {
   $codec: string;
   value: JsonValue;
@@ -115,7 +117,7 @@ export type AnyTreeNode<TTypes extends NodeTypeMap> = {
 export interface TreeDocument<TTypes extends NodeTypeMap> {
   root: AnyTreeNode<TTypes>;
   revision?: string;
-  metadata?: Record<string, unknown>;
+  metadata?: JsonObject;
 }
 
 export interface NodeRuntimeSpec<TAttrs> {
@@ -155,7 +157,7 @@ export interface IndexedTree<TTypes extends NodeTypeMap> {
   rootId: NodeId;
   nodes: ReadonlyMap<NodeId, IndexedNode<TTypes>>;
   revision?: string;
-  metadata?: Record<string, unknown>;
+  metadata?: Readonly<JsonObject>;
   index: TreeIndex;
   cache: TreeCache;
 }
@@ -265,7 +267,7 @@ export interface TreePatch {
   format: "tree-patch/v1";
   patchId: string;
   baseRevision?: string;
-  metadata?: Record<string, unknown>;
+  metadata?: JsonObject;
   ops: readonly PatchOp[];
 }
 

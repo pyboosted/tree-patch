@@ -5,6 +5,7 @@ import type {
   DeepValue,
   Guard,
   IndexedTree,
+  JsonObject,
   JsonPointer,
   NodeId,
   NodeTypeMap,
@@ -29,6 +30,7 @@ import { assertPatchEnvelope, normalizePosition } from "../core/patch-validation
 import { isPlainObject } from "../core/snapshot.js";
 import { getTreeState } from "../core/state.js";
 import { pathToPointer, resolvePointer } from "../schema/pointers.js";
+import { cloneJsonValue, isJsonValue } from "../schema/adapters.js";
 import type { CompiledTreeSchema } from "../schema/schema.js";
 import { compileTreeSchema } from "../schema/schema.js";
 import {
@@ -51,14 +53,14 @@ export interface PatchBuilderOptions<TTypes extends NodeTypeMap> {
   source?: IndexedTree<TTypes>;
   patchId?: string;
   baseRevision?: string;
-  metadata?: Record<string, unknown>;
+  metadata?: JsonObject;
 }
 
 export interface CreateEditorOptions<TTypes extends NodeTypeMap> {
   schema?: TreeSchema<TTypes>;
   patchId?: string;
   baseRevision?: string;
-  metadata?: Record<string, unknown>;
+  metadata?: JsonObject;
 }
 
 type PatchBuilderChainMethods<TTypes extends NodeTypeMap> = Pick<
@@ -103,7 +105,7 @@ export interface NodeEditor<
 export interface PatchBuilder<TTypes extends NodeTypeMap> {
   patchId(patchId: string): PatchBuilder<TTypes>;
   baseRevision(baseRevision?: string): PatchBuilder<TTypes>;
-  metadata(metadata?: Record<string, unknown>): PatchBuilder<TTypes>;
+  metadata(metadata?: JsonObject): PatchBuilder<TTypes>;
   node<TType extends NodeTypeKey<TTypes>>(
     nodeId: NodeId,
     claimedType: TType,
@@ -142,13 +144,20 @@ function createOpIdFactory() {
 }
 
 function cloneMetadata(
-  metadata?: Record<string, unknown>,
-): Record<string, unknown> | undefined {
+  metadata?: JsonObject,
+): JsonObject | undefined {
   if (!metadata) {
     return undefined;
   }
 
-  return { ...metadata };
+  if (!isPlainObject(metadata) || !isJsonValue(metadata)) {
+    throw new MalformedPatchError(
+      "Patch metadata must be a JSON-serializable object.",
+      { details: { metadata } },
+    );
+  }
+
+  return cloneJsonValue(metadata);
 }
 
 function getCompiledSchemas<TTypes extends NodeTypeMap>(
@@ -283,7 +292,7 @@ class PatchBuilderController<TTypes extends NodeTypeMap> {
   private readonly currentTree: IndexedTree<TTypes> | undefined;
   private patchIdValue: string | undefined;
   private baseRevisionValue: string | undefined;
-  private metadataValue: Record<string, unknown> | undefined;
+  private metadataValue: JsonObject | undefined;
   private readonly ops: PatchOp[] = [];
   private readonly opIds = createOpIdFactory();
 
@@ -306,7 +315,7 @@ class PatchBuilderController<TTypes extends NodeTypeMap> {
     this.baseRevisionValue = baseRevision;
   }
 
-  setMetadata(metadata?: Record<string, unknown>): void {
+  setMetadata(metadata?: JsonObject): void {
     this.metadataValue = cloneMetadata(metadata);
   }
 

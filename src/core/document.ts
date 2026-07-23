@@ -2,6 +2,7 @@ import type {
   CreateDocumentOptions,
   IndexedNode,
   IndexedTree,
+  JsonObject,
   JsonPointer,
   NodeTypeMap,
   TreeDocument,
@@ -10,11 +11,11 @@ import {
   DuplicateIdError,
   InvalidRootError,
   MalformedTreeError,
-  UnsupportedRuntimeValueError,
 } from "./errors.js";
 import {
   createReadonlyMapView,
   deepFreezePlainData,
+  isPlainObject,
 } from "./snapshot.js";
 import { attachTreeState } from "./state.js";
 import { getSubtreeHash } from "./hash.js";
@@ -24,31 +25,32 @@ import {
   cloneRuntimeTreeValue,
   exposeIndexedNode,
 } from "../schema/runtime-clone.js";
+import {
+  cloneJsonValue,
+  isJsonValue,
+} from "../schema/adapters.js";
 
 const NODE_ENVELOPE_KEYS = new Set(["id", "type", "attrs", "children"]);
 
 function cloneMetadata(
-  metadata: Record<string, unknown> | undefined,
+  metadata: JsonObject | undefined,
   ownership: "clone" | "assumeImmutable",
-): Record<string, unknown> | undefined {
+): Readonly<JsonObject> | undefined {
   if (!metadata) {
     return undefined;
+  }
+
+  if (!isPlainObject(metadata) || !isJsonValue(metadata)) {
+    throw new MalformedTreeError(
+      "Document metadata must be a JSON-serializable object.",
+    );
   }
 
   if (ownership === "assumeImmutable") {
     return metadata;
   }
 
-  try {
-    return structuredClone(metadata);
-  } catch (error) {
-    throw new UnsupportedRuntimeValueError(
-      "Document metadata must be structured-cloneable in clone ownership mode.",
-      {
-        cause: error,
-      },
-    );
-  }
+  return deepFreezePlainData(cloneJsonValue(metadata));
 }
 
 function assertNodeEnvelope(node: unknown, location: string, isRoot: boolean): asserts node is {
@@ -209,7 +211,7 @@ export function createDocument<TTypes extends NodeTypeMap>(
     tree.revision = input.revision;
   }
   if (input.metadata !== undefined) {
-    tree.metadata = cloneMetadata(input.metadata, ownership) as Record<string, unknown>;
+    tree.metadata = cloneMetadata(input.metadata, ownership)!;
   }
 
   attachTreeState(tree, {

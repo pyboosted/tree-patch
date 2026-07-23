@@ -6,6 +6,7 @@ import type {
   ConflictResolutionOptions,
   ConflictResolutionSession as ConflictResolutionSessionContract,
   IndexedTree,
+  JsonObject,
   NodeTypeMap,
   PatchConflict,
   PatchOp,
@@ -13,6 +14,7 @@ import type {
   ResolutionBuildResult,
   TreePatch,
 } from "../core/types.js";
+import { cloneJsonValue } from "../schema/adapters.js";
 
 interface ResolutionState<TTypes extends NodeTypeMap> {
   preview: IndexedTree<TTypes>;
@@ -29,13 +31,13 @@ function stripGuardsFromOp(op: PatchOp): PatchOp {
 }
 
 function cloneMetadata(
-  metadata?: Record<string, unknown>,
-): Record<string, unknown> | undefined {
+  metadata?: Readonly<JsonObject>,
+): JsonObject | undefined {
   if (metadata === undefined) {
     return undefined;
   }
 
-  return structuredClone(metadata);
+  return cloneJsonValue(metadata as JsonObject);
 }
 
 class ConflictResolutionSessionController<TTypes extends NodeTypeMap>
