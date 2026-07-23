@@ -4,6 +4,7 @@ import {
   createResolutionSession,
   diffTrees,
 } from "../dist/index.js";
+import { getNodeHash } from "../dist/core/hash.js";
 
 function measure(name, run) {
   const started = performance.now();
@@ -56,18 +57,29 @@ function deepTree(size, delta) {
   return createDocument({ root });
 }
 
+function emptyTree() {
+  return createDocument({
+    root: {
+      id: "root",
+      type: "Root",
+      attrs: { version: 1 },
+      children: [],
+    },
+  });
+}
+
 const wideBase = wideTree(100_000, 1);
 const wideTarget = wideTree(100_000, 2);
 const reorderBase = wideTree(10_000, 1);
 const reorderTarget = wideTree(10_000, 1, true);
 const thresholdBase = deepTree(5_000, 0);
 const thresholdTarget = deepTree(5_000, 1);
-const bagTree = (offset) => createDocument({
+const bagTree = (offset, size = 1_000) => createDocument({
   root: {
     id: "bag",
     type: "Bag",
     attrs: Object.fromEntries(
-      Array.from({ length: 1_000 }, (_, index) => [
+      Array.from({ length: size }, (_, index) => [
         `key-${index}`,
         index + offset,
       ]),
@@ -75,10 +87,32 @@ const bagTree = (offset) => createDocument({
     children: [],
   },
 });
+const largeBagBase = bagTree(0, 4_000);
+const largeBagTarget = bagTree(1, 4_000);
+const insertionBase = emptyTree();
+const insertionTarget = wideTree(8_000, 1);
+const deepApplyBase = deepTree(4_000, 0);
+const deepApplyTarget = deepTree(4_000, 1);
+const largeValueTree = createDocument({
+  revision: "external",
+  root: {
+    id: "large-value",
+    type: "Bag",
+    attrs: {
+      values: Array.from({ length: 100_000 }, (_, index) => index),
+    },
+    children: [],
+  },
+});
 
 const rows = [];
-rows.push(measure("diff: 100k siblings, one attr", () =>
-  diffTrees(wideBase, wideTarget).ops.length));
+let widePatch;
+rows.push(measure("diff: 100k siblings, one attr", () => {
+  widePatch = diffTrees(wideBase, wideTarget);
+  return widePatch.ops.length;
+}));
+rows.push(measure("apply: sparse attr in 100k tree", () =>
+  applyPatch(wideBase, widePatch).status));
 const reorderPatch = diffTrees(reorderBase, reorderTarget);
 rows.push(measure("apply: reverse 10k siblings", () =>
   applyPatch(reorderBase, reorderPatch).status));
@@ -99,5 +133,16 @@ rows.push(measure("resolution: take base for 1k ops", () => {
   }
   return resolution.build().status;
 }));
+const largeBagPatch = diffTrees(largeBagBase, largeBagTarget);
+rows.push(measure("apply: 4k fields on one node", () =>
+  applyPatch(largeBagBase, largeBagPatch).status));
+const insertionPatch = diffTrees(insertionBase, insertionTarget);
+rows.push(measure("apply: insert 8k siblings", () =>
+  applyPatch(insertionBase, insertionPatch).status));
+const deepApplyPatch = diffTrees(deepApplyBase, deepApplyTarget);
+rows.push(measure("apply: update 4k-node chain", () =>
+  applyPatch(deepApplyBase, deepApplyPatch).status));
+rows.push(measure("hash: 100k primitive values", () =>
+  getNodeHash(largeValueTree, "large-value").length));
 
 console.table(rows);
