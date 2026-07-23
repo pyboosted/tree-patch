@@ -975,15 +975,78 @@ function buildPlanningState<TTypes extends NodeTypeMap>(
   base: IndexedTree<TTypes>,
   target: IndexedTree<TTypes>,
 ) {
+  const previousById = new Map<NodeId, NodeId | null>();
+  const nextById = new Map<NodeId, NodeId | null>();
+  const firstChildByParent = new Map<NodeId, NodeId | null>();
+  const lastChildByParent = new Map<NodeId, NodeId | null>();
+  const mutatedParents = new Set<NodeId>();
+  for (const [parentId, node] of base.nodes) {
+    const childIds = node.childIds.filter((childId) => target.nodes.has(childId));
+    firstChildByParent.set(parentId, childIds[0] ?? null);
+    lastChildByParent.set(parentId, childIds.at(-1) ?? null);
+    for (let index = 0; index < childIds.length; index += 1) {
+      const childId = childIds[index]!;
+      previousById.set(childId, childIds[index - 1] ?? null);
+      nextById.set(childId, childIds[index + 1] ?? null);
+    }
+    if (!hasSameNodeOrder(node.childIds, childIds)) {
+      mutatedParents.add(parentId);
+    }
+  }
+
   return {
     parentById: new Map(base.index.parentById),
-    childIdsByParent: new Map(
-      [...base.nodes].map(([nodeId, node]) => [
-        nodeId,
-        [...node.childIds].filter((childId) => target.nodes.has(childId)),
-      ]),
-    ),
+    previousById,
+    nextById,
+    firstChildByParent,
+    lastChildByParent,
+    mutatedParents,
   };
+}
+
+function linkPlanningNodeAfter<TTypes extends NodeTypeMap>(
+  planning: ReturnType<typeof buildPlanningState<TTypes>>,
+  nodeId: NodeId,
+  parentId: NodeId,
+  previousId: NodeId | undefined,
+): void {
+  if (previousId === undefined) {
+    const first = planning.firstChildByParent.get(parentId) ?? null;
+    planning.previousById.set(nodeId, null);
+    planning.nextById.set(nodeId, first);
+    planning.firstChildByParent.set(parentId, nodeId);
+    if (first === null) {
+      planning.lastChildByParent.set(parentId, nodeId);
+    } else {
+      planning.previousById.set(first, nodeId);
+    }
+  } else {
+    const next = planning.nextById.get(previousId) ?? null;
+    planning.previousById.set(nodeId, previousId);
+    planning.nextById.set(nodeId, next);
+    planning.nextById.set(previousId, nodeId);
+    if (next === null) {
+      planning.lastChildByParent.set(parentId, nodeId);
+    } else {
+      planning.previousById.set(next, nodeId);
+    }
+  }
+  planning.parentById.set(nodeId, parentId);
+  planning.mutatedParents.add(parentId);
+}
+
+function initializePlanningChildren<TTypes extends NodeTypeMap>(
+  planning: ReturnType<typeof buildPlanningState<TTypes>>,
+  parentId: NodeId,
+  childIds: readonly NodeId[],
+): void {
+  planning.firstChildByParent.set(parentId, childIds[0] ?? null);
+  planning.lastChildByParent.set(parentId, childIds.at(-1) ?? null);
+  for (let index = 0; index < childIds.length; index += 1) {
+    const childId = childIds[index]!;
+    planning.previousById.set(childId, childIds[index - 1] ?? null);
+    planning.nextById.set(childId, childIds[index + 1] ?? null);
+  }
 }
 
 function insertPlanningSubtree<TTypes extends NodeTypeMap>(
@@ -998,16 +1061,14 @@ function insertPlanningSubtree<TTypes extends NodeTypeMap>(
     return;
   }
 
-  const siblings = planning.childIdsByParent.get(parentId) ?? [];
   const targetParent = target.nodes.get(parentId);
-  const targetIndex = targetParent?.childIds.indexOf(nodeId) ?? siblings.length;
-  const insertIndex =
-    targetIndex <= 0
-      ? 0
-      : siblings.indexOf(targetParent!.childIds[targetIndex - 1]!) + 1;
-
-  siblings.splice(Math.max(0, insertIndex), 0, nodeId);
-  planning.childIdsByParent.set(parentId, siblings);
+  const targetIndex = target.index.positionById.get(nodeId) ?? 0;
+  linkPlanningNodeAfter(
+    planning,
+    nodeId,
+    parentId,
+    targetIndex > 0 ? targetParent?.childIds[targetIndex - 1] : undefined,
+  );
 
   const stack: Array<{ nodeId: NodeId; parentId: NodeId }> = [{
     nodeId,
@@ -1023,7 +1084,7 @@ function insertPlanningSubtree<TTypes extends NodeTypeMap>(
       (childId) => !base.nodes.has(childId),
     );
     planning.parentById.set(current.nodeId, current.parentId);
-    planning.childIdsByParent.set(current.nodeId, insertedChildren);
+    initializePlanningChildren(planning, current.nodeId, insertedChildren);
     for (let index = insertedChildren.length - 1; index >= 0; index -= 1) {
       stack.push({
         nodeId: insertedChildren[index]!,
@@ -1090,25 +1151,13 @@ function collectMoveOps<TTypes extends NodeTypeMap>(
   planning: ReturnType<typeof buildPlanningState<TTypes>>,
 ): MoveNodeOp[] {
   const moves: MoveNodeOp[] = [];
-  const previousById = new Map<NodeId, NodeId | null>();
-  const nextById = new Map<NodeId, NodeId | null>();
-  const firstChildByParent = new Map<NodeId, NodeId | null>();
-  const lastChildByParent = new Map<NodeId, NodeId | null>();
-  const mutatedParents = new Set<NodeId>();
-
-  for (const [parentId, childIds] of planning.childIdsByParent) {
-    firstChildByParent.set(parentId, childIds[0] ?? null);
-    lastChildByParent.set(parentId, childIds.at(-1) ?? null);
-    for (let index = 0; index < childIds.length; index += 1) {
-      const childId = childIds[index]!;
-      previousById.set(childId, childIds[index - 1] ?? null);
-      nextById.set(childId, childIds[index + 1] ?? null);
-    }
-    const sourceChildIds = context.base.nodes.get(parentId)?.childIds ?? [];
-    if (!hasSameNodeOrder(sourceChildIds, childIds)) {
-      mutatedParents.add(parentId);
-    }
-  }
+  const {
+    previousById,
+    nextById,
+    firstChildByParent,
+    lastChildByParent,
+    mutatedParents,
+  } = planning;
 
   function orderMatches(parentId: NodeId, targetChildIds: readonly NodeId[]): boolean {
     let current = firstChildByParent.get(parentId) ?? null;

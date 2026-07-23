@@ -4,6 +4,7 @@ import test from "node:test";
 import {
   applyPatch,
   createDocument,
+  createEditor,
   createResolutionSession,
   diffTrees,
 } from "../src/index.js";
@@ -173,4 +174,33 @@ test("repeated deep edits stop invalidation at an already-dirty ancestor", () =>
   assert.equal(patch.ops.length, size);
   assert.equal(result.status, "applied");
   assert.equal(result.tree.nodes.get(`deep-${size - 1}`)?.attrs.value, size);
+});
+
+test("sibling insertions and removals share one linked order per parent", () => {
+  const empty = createWideTree(0, 1);
+  const populated = createWideTree(2_000, 1);
+  const inserted = applyPatch(empty, diffTrees(empty, populated));
+  assert.equal(inserted.status, "applied");
+  assert.equal(inserted.tree.nodes.get("root")?.childIds.length, 2_000);
+
+  const removalPatch = diffTrees(inserted.tree, empty);
+  const removed = applyPatch(inserted.tree, removalPatch);
+  assert.equal(removalPatch.ops.length, 2_000);
+  assert.equal(removed.status, "applied");
+  assert.deepEqual(removed.tree.nodes.get("root")?.childIds, []);
+});
+
+test("editor move sequences retain sibling planning state until build", () => {
+  const size = 2_000;
+  const source = createWideTree(size, 1);
+  const editor = createEditor(source, { patchId: "editor-reverse" });
+  for (let index = 0; index < size; index += 1) {
+    editor.node(`leaf-${index}`, "Leaf").move("root", { atStart: true });
+  }
+
+  const patch = editor.build();
+  const result = applyPatch(source, patch);
+  assert.equal(result.status, "applied");
+  assert.equal(result.tree.nodes.get("root")?.childIds[0], `leaf-${size - 1}`);
+  assert.equal(result.tree.nodes.get("root")?.childIds.at(-1), "leaf-0");
 });

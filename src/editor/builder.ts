@@ -18,6 +18,8 @@ import type {
 import {
   createPatchExecutionSession,
   applyOperationInSession,
+  flushPatchExecutionSession,
+  getSessionNodePosition,
   type PatchExecutionSession,
 } from "../core/apply.js";
 import {
@@ -277,41 +279,50 @@ function createAnchorGuards(
 
 function createCurrentPositionGuards<TTypes extends NodeTypeMap>(
   tree: IndexedTree<TTypes> | undefined,
+  session: PatchExecutionSession<TTypes> | undefined,
   nodeId: NodeId,
 ): Guard[] {
   if (!tree) {
     return [];
   }
 
-  const parentId = tree.index.parentById.get(nodeId);
-  if (parentId == null) {
-    return [];
-  }
-
-  const siblings = tree.nodes.get(parentId)?.childIds;
-  const index = siblings?.indexOf(nodeId) ?? -1;
-  if (!siblings || index < 0) {
-    return [];
+  const sessionPosition = session
+    ? getSessionNodePosition(session, nodeId)
+    : undefined;
+  let previousId = sessionPosition?.previousId;
+  let nextId = sessionPosition?.nextId;
+  if (!sessionPosition) {
+    const parentId = tree.index.parentById.get(nodeId);
+    if (parentId == null) {
+      return [];
+    }
+    const siblings = tree.nodes.get(parentId)?.childIds;
+    const index = siblings?.indexOf(nodeId) ?? -1;
+    if (!siblings || index < 0) {
+      return [];
+    }
+    previousId = siblings[index - 1] ?? null;
+    nextId = siblings[index + 1] ?? null;
   }
 
   const guards: Guard[] = [];
-  if (index === 0) {
+  if (previousId === null) {
     guards.push({ kind: "positionAtStart", nodeId });
   } else {
     guards.push({
       kind: "positionAfter",
       nodeId,
-      afterId: siblings[index - 1]!,
+      afterId: previousId!,
     });
   }
 
-  if (index === siblings.length - 1) {
+  if (nextId === null) {
     guards.push({ kind: "positionAtEnd", nodeId });
   } else {
     guards.push({
       kind: "positionBefore",
       nodeId,
-      beforeId: siblings[index + 1]!,
+      beforeId: nextId!,
     });
   }
 
@@ -629,7 +640,11 @@ class PatchBuilderController<TTypes extends NodeTypeMap> {
         nodeId,
         parentId: this.currentTree?.index.parentById.get(nodeId) ?? null,
       });
-      guards.push(...createCurrentPositionGuards(this.currentTree, nodeId));
+      guards.push(...createCurrentPositionGuards(
+        this.currentTree,
+        this.validationSession,
+        nodeId,
+      ));
     }
 
     this.commitOp({
@@ -657,6 +672,9 @@ class PatchBuilderController<TTypes extends NodeTypeMap> {
 
     const guards: Guard[] = [];
     if (this.getNode(nodeId)) {
+      if (this.validationSession) {
+        flushPatchExecutionSession(this.validationSession);
+      }
       guards.push({
         kind: "subtreeHash",
         nodeId,

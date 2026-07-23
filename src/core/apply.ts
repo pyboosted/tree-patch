@@ -52,17 +52,14 @@ import {
 } from "../schema/runtime-clone.js";
 import {
   clearSubtreeState,
-  collectSubtreeNodeIds,
   createOverlayState,
   getNode,
   getParentChildIds,
   invalidateNodeCaches,
   invalidateSubtreeHashes,
   reindexSubtreeDepths,
-  resolvePositionAgainstChildIds,
   setNode,
   type OverlayState,
-  updateSiblingPositions,
 } from "./overlay.js";
 import {
   assertPatchEnvelope,
@@ -91,6 +88,12 @@ export interface PatchExecutionSession<TTypes extends NodeTypeMap> {
   readonly tree: IndexedTree<TTypes>;
   readonly siblingOrders: Map<NodeId, MutableSiblingOrder>;
   readonly ownedAttrContainers: WeakSet<object>;
+}
+
+export interface SessionNodePosition {
+  readonly parentId: NodeId;
+  readonly previousId: NodeId | null;
+  readonly nextId: NodeId | null;
 }
 
 export interface ExecutePatchInternalResult<TTypes extends NodeTypeMap> {
@@ -159,6 +162,125 @@ function getSiblingOrder<TTypes extends NodeTypeMap>(
   return order;
 }
 
+function unlinkSibling(
+  order: MutableSiblingOrder,
+  nodeId: NodeId,
+): void {
+  const previous = order.previous.get(nodeId) ?? null;
+  const next = order.next.get(nodeId) ?? null;
+  if (previous === null) {
+    order.first = next;
+  } else {
+    order.next.set(previous, next);
+  }
+  if (next === null) {
+    order.last = previous;
+  } else {
+    order.previous.set(next, previous);
+  }
+  order.previous.delete(nodeId);
+  order.next.delete(nodeId);
+  order.dirty = true;
+}
+
+function linkSiblingAfter(
+  order: MutableSiblingOrder,
+  nodeId: NodeId,
+  previousId: NodeId | null,
+): void {
+  if (previousId === null) {
+    const first = order.first;
+    order.first = nodeId;
+    order.previous.set(nodeId, null);
+    order.next.set(nodeId, first);
+    if (first === null) {
+      order.last = nodeId;
+    } else {
+      order.previous.set(first, nodeId);
+    }
+    order.dirty = true;
+    return;
+  }
+
+  const next = order.next.get(previousId) ?? null;
+  order.next.set(previousId, nodeId);
+  order.previous.set(nodeId, previousId);
+  order.next.set(nodeId, next);
+  if (next === null) {
+    order.last = nodeId;
+  } else {
+    order.previous.set(next, nodeId);
+  }
+  order.dirty = true;
+}
+
+function resolvePreviousSibling<TTypes extends NodeTypeMap>(
+  context: ExecutionContext<TTypes>,
+  parentId: NodeId,
+  position: ChildPosition | undefined,
+  opId: string,
+): { ok: true; previousId: NodeId | null } | { ok: false; conflict: PatchConflict } {
+  const order = getSiblingOrder(context, parentId);
+  if (!position || "atEnd" in position) {
+    return { ok: true, previousId: order.last };
+  }
+  if ("atStart" in position) {
+    return { ok: true, previousId: null };
+  }
+  const anchorId = "afterId" in position ? position.afterId : position.beforeId;
+  if (context.overlay.index.parentById.get(anchorId) !== parentId) {
+    return {
+      ok: false,
+      conflict: toConflict(
+        opId,
+        "AnchorMissing",
+        `Anchor node "${anchorId}" is not a child of "${parentId}".`,
+        { nodeId: parentId },
+      ),
+    };
+  }
+  return {
+    ok: true,
+    previousId:
+      "afterId" in position
+        ? position.afterId
+        : order.previous.get(position.beforeId) ?? null,
+  };
+}
+
+function collectCurrentSubtreeNodeIds<TTypes extends NodeTypeMap>(
+  context: ExecutionContext<TTypes>,
+  nodeId: NodeId,
+): NodeId[] {
+  const collected: NodeId[] = [];
+  const stack = [nodeId];
+  while (stack.length > 0) {
+    const currentId = stack.pop()!;
+    const node = context.overlay.nodes.get(currentId);
+    if (!node) {
+      continue;
+    }
+    collected.push(currentId);
+    const order = context.siblingOrders.get(currentId);
+    if (!order) {
+      for (let index = node.childIds.length - 1; index >= 0; index -= 1) {
+        stack.push(node.childIds[index]!);
+      }
+      continue;
+    }
+    const childIds: NodeId[] = [];
+    let childId = order.first;
+    while (childId !== null) {
+      childIds.push(childId);
+      childId = order.next.get(childId) ?? null;
+    }
+    for (let index = childIds.length - 1; index >= 0; index -= 1) {
+      stack.push(childIds[index]!);
+    }
+  }
+  return collected;
+}
+
 function flushSiblingOrders<TTypes extends NodeTypeMap>(
   context: ExecutionContext<TTypes>,
 ): void {
@@ -178,6 +300,39 @@ function flushSiblingOrders<TTypes extends NodeTypeMap>(
     });
     order.dirty = false;
   }
+}
+
+export function flushPatchExecutionSession<TTypes extends NodeTypeMap>(
+  session: PatchExecutionSession<TTypes>,
+): void {
+  flushSiblingOrders({
+    overlay: session.overlay,
+    siblingOrders: session.siblingOrders,
+    ownedAttrContainers: session.ownedAttrContainers,
+  });
+}
+
+export function getSessionNodePosition<TTypes extends NodeTypeMap>(
+  session: PatchExecutionSession<TTypes>,
+  nodeId: NodeId,
+): SessionNodePosition | undefined {
+  const parentId = session.overlay.index.parentById.get(nodeId);
+  if (parentId == null) {
+    return undefined;
+  }
+  const order = getSiblingOrder({
+    overlay: session.overlay,
+    siblingOrders: session.siblingOrders,
+    ownedAttrContainers: session.ownedAttrContainers,
+  }, parentId);
+  if (!order.previous.has(nodeId) || !order.next.has(nodeId)) {
+    return undefined;
+  }
+  return {
+    parentId,
+    previousId: order.previous.get(nodeId) ?? null,
+    nextId: order.next.get(nodeId) ?? null,
+  };
 }
 
 function clearSiblingOrders<TTypes extends NodeTypeMap>(
@@ -742,6 +897,7 @@ function evaluateGuard<TTypes extends NodeTypeMap>(
       return { ok: true };
     }
     case "subtreeHash": {
+      flushSiblingOrders(context);
       const node = overlay.nodes.get(guard.nodeId);
       if (!node) {
         return {
@@ -1129,7 +1285,7 @@ function normalizeSerializedSubtree<TTypes extends NodeTypeMap>(
 function setParentChildIds<TTypes extends NodeTypeMap>(
   overlay: OverlayState<TTypes>,
   parentId: NodeId,
-  childIds: readonly NodeId[],
+  childIds: NodeId[],
 ): void {
   const parent = getNode(overlay, parentId);
   if (!parent) {
@@ -1138,7 +1294,7 @@ function setParentChildIds<TTypes extends NodeTypeMap>(
 
   setNode(overlay, {
     ...parent,
-    childIds: [...childIds],
+    childIds,
   });
   overlay.dirtyNodeIds.add(parentId);
 }
@@ -1174,16 +1330,6 @@ function applyInsertNode<TTypes extends NodeTypeMap>(
   }
 
   const position = normalizePosition(op.position, `patch.ops.${op.opId}.position`);
-  const resolvedIndex = resolvePositionAgainstChildIds(
-    parent.childIds,
-    position,
-    op.opId,
-    op.parentId,
-    toConflict,
-  );
-  if (!resolvedIndex.ok) {
-    return resolvedIndex;
-  }
 
   const subtreeIds = collectSerializedNodeIds(op.node);
   const conflictingId = subtreeIds.find((nodeId) => context.overlay.nodes.has(nodeId));
@@ -1203,6 +1349,15 @@ function applyInsertNode<TTypes extends NodeTypeMap>(
   if (!guards.ok) {
     return guards;
   }
+  const resolvedPosition = resolvePreviousSibling(
+    context,
+    parent.id,
+    position,
+    op.opId,
+  );
+  if (!resolvedPosition.ok) {
+    return resolvedPosition;
+  }
 
   const parentDepth = context.overlay.index.depthById.get(parent.id) ?? 0;
   const normalized = normalizeSerializedSubtree(
@@ -1210,12 +1365,8 @@ function applyInsertNode<TTypes extends NodeTypeMap>(
     op.node,
     parent.id,
     parentDepth + 1,
-    resolvedIndex.index,
+    0,
   );
-
-  const newChildIds = [...parent.childIds];
-  newChildIds.splice(resolvedIndex.index, 0, op.node.id);
-  setParentChildIds(context.overlay, parent.id, newChildIds);
 
   normalized.nodes.forEach((node) => {
     setNode(context.overlay, node);
@@ -1228,7 +1379,11 @@ function applyInsertNode<TTypes extends NodeTypeMap>(
     context.overlay.index.positionById.set(entry.nodeId, entry.position);
   });
 
-  updateSiblingPositions(context.overlay, parent.id);
+  linkSiblingAfter(
+    getSiblingOrder(context, parent.id),
+    op.node.id,
+    resolvedPosition.previousId,
+  );
   invalidateSubtreeHashes(context.overlay, parent.id);
   return { ok: true };
 }
@@ -1370,42 +1525,8 @@ function applyMoveNode<TTypes extends NodeTypeMap>(
     return { ok: true };
   }
 
-  const previous = currentOrder.previous.get(op.nodeId) ?? null;
-  const next = currentOrder.next.get(op.nodeId) ?? null;
-  if (previous === null) {
-    currentOrder.first = next;
-  } else {
-    currentOrder.next.set(previous, next);
-  }
-  if (next === null) {
-    currentOrder.last = previous;
-  } else {
-    currentOrder.previous.set(next, previous);
-  }
-  currentOrder.dirty = true;
-
-  if (targetPrevious === null) {
-    const first = destinationOrder.first;
-    destinationOrder.first = op.nodeId;
-    destinationOrder.previous.set(op.nodeId, null);
-    destinationOrder.next.set(op.nodeId, first);
-    if (first === null) {
-      destinationOrder.last = op.nodeId;
-    } else {
-      destinationOrder.previous.set(first, op.nodeId);
-    }
-  } else {
-    const destinationNext = destinationOrder.next.get(targetPrevious) ?? null;
-    destinationOrder.next.set(targetPrevious, op.nodeId);
-    destinationOrder.previous.set(op.nodeId, targetPrevious);
-    destinationOrder.next.set(op.nodeId, destinationNext);
-    if (destinationNext === null) {
-      destinationOrder.last = op.nodeId;
-    } else {
-      destinationOrder.previous.set(destinationNext, op.nodeId);
-    }
-  }
-  destinationOrder.dirty = true;
+  unlinkSibling(currentOrder, op.nodeId);
+  linkSiblingAfter(destinationOrder, op.nodeId, targetPrevious);
   overlay.index.parentById.set(op.nodeId, newParent.id);
 
   if (currentParentId !== op.newParentId) {
@@ -1432,7 +1553,9 @@ function applyReplaceSubtree<TTypes extends NodeTypeMap>(
     };
   }
 
-  const replacedSubtreeIds = new Set(collectSubtreeNodeIds(overlay, op.nodeId));
+  const replacedSubtreeIds = new Set(
+    collectCurrentSubtreeNodeIds(context, op.nodeId),
+  );
   const replacementIds = collectSerializedNodeIds(op.node);
   for (const replacementId of replacementIds) {
     if (replacementId === op.nodeId) {
@@ -1477,6 +1600,9 @@ function applyReplaceSubtree<TTypes extends NodeTypeMap>(
 
   const removedDescendantIds = [...replacedSubtreeIds].filter((nodeId) => nodeId !== op.nodeId);
   clearSubtreeState(overlay, removedDescendantIds);
+  for (const replacedNodeId of replacedSubtreeIds) {
+    context.siblingOrders.delete(replacedNodeId);
+  }
 
   const normalized = normalizeSerializedSubtree(
     overlay,
@@ -1566,11 +1692,12 @@ function applyRemoveNode<TTypes extends NodeTypeMap>(
     return guards;
   }
 
-  const removedIds = collectSubtreeNodeIds(overlay, op.nodeId);
-  const siblingIds = getParentChildIds(overlay, parentId).filter((childId) => childId !== op.nodeId);
-  setParentChildIds(overlay, parentId, siblingIds);
+  const removedIds = collectCurrentSubtreeNodeIds(context, op.nodeId);
+  unlinkSibling(getSiblingOrder(context, parentId), op.nodeId);
   clearSubtreeState(overlay, removedIds);
-  updateSiblingPositions(overlay, parentId);
+  for (const removedId of removedIds) {
+    context.siblingOrders.delete(removedId);
+  }
   invalidateSubtreeHashes(overlay, parentId);
   return { ok: true };
 }
@@ -1579,10 +1706,6 @@ function applyOperation<TTypes extends NodeTypeMap>(
   context: ExecutionContext<TTypes>,
   op: PatchOp,
 ): OperationResult {
-  if (op.kind !== "moveNode") {
-    clearSiblingOrders(context);
-  }
-
   switch (op.kind) {
     case "setAttr":
       return applySetAttr(context, op);
@@ -1624,9 +1747,7 @@ export function applyOperationInSession<TTypes extends NodeTypeMap>(
     siblingOrders: session.siblingOrders,
     ownedAttrContainers: session.ownedAttrContainers,
   };
-  const result = applyOperation(context, op);
-  clearSiblingOrders(context);
-  return result;
+  return applyOperation(context, op);
 }
 
 function freezeNodeForSnapshot<TTypes extends NodeTypeMap>(
