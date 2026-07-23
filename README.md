@@ -40,6 +40,7 @@ import {
   applyPatch,
   validatePatch,
   materialize,
+  preparePatch,
   createResolutionSession,
   diffTrees,
   rebasePatch,
@@ -201,6 +202,8 @@ Behavior summary:
 - `validatePatch()` checks conflicts without producing a preview tree
 - `applyPatch()` returns a new immutable `IndexedTree`
 - `materialize()` uses the same conflict semantics as `applyPatch()`
+- `preparePatch()` returns a deeply frozen clone whose structural validation is
+  cached for repeated validate/apply/rebase calls
 - `atomic` mode stops at the first conflict
 - `preview` mode keeps successful ops and reports skipped conflicts
 

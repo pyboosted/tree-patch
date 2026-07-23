@@ -1937,9 +1937,12 @@ export function executePatchInternal<TTypes extends NodeTypeMap>(
   options: {
     mode: "atomic" | "preview";
     produceTree: boolean;
+    patchValidated?: boolean;
   },
 ): ExecutePatchInternalResult<TTypes> {
-  assertPatchEnvelope(patch);
+  if (!options.patchValidated) {
+    assertPatchEnvelope(patch);
+  }
 
   const session = createPatchExecutionSession(source);
   const context: ExecutionContext<TTypes> = {

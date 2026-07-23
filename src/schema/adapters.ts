@@ -61,73 +61,98 @@ export function isJsonValue(value: unknown): value is JsonValue {
 }
 
 export function cloneJsonValue<TValue extends JsonValue>(value: TValue): TValue {
-  if (!isJsonValue(value)) {
+  const result = tryCloneJsonValue(value);
+  if (!result.ok) {
     throw new UnsupportedRuntimeValueError(
       "Cannot clone a cyclic or non-JSON runtime value as JSON.",
     );
   }
-  if (value === null || typeof value !== "object") {
-    return value;
-  }
+  return result.value as TValue;
+}
 
-  const root: JsonValue = Array.isArray(value) ? [] : {};
-  const stack: Array<{ source: JsonValue[] | Record<string, JsonValue>; target: JsonValue[] | Record<string, JsonValue> }> = [
-    {
-      source: value as JsonValue[] | Record<string, JsonValue>,
-      target: root as JsonValue[] | Record<string, JsonValue>,
+export function tryCloneJsonValue(
+  value: unknown,
+): { ok: true; value: JsonValue } | { ok: false } {
+  let root: JsonValue | undefined;
+  const active = new WeakSet<object>();
+  type Frame =
+    | {
+        kind: "value";
+        value: unknown;
+        assign: (value: JsonValue) => void;
+      }
+    | { kind: "exit"; value: object };
+  const stack: Frame[] = [{
+    kind: "value",
+    value,
+    assign: (cloned) => {
+      root = cloned;
     },
-  ];
-
+  }];
   while (stack.length > 0) {
-    const { source, target } = stack.pop()!;
-    if (Array.isArray(source)) {
-      const targetArray = target as JsonValue[];
-      targetArray.length = source.length;
-      for (let index = source.length - 1; index >= 0; index -= 1) {
-        const child = source[index]!;
-        if (child !== null && typeof child === "object") {
-          const childClone: JsonValue = Array.isArray(child) ? [] : {};
-          targetArray[index] = childClone;
-          stack.push({
-            source: child as JsonValue[] | Record<string, JsonValue>,
-            target: childClone as JsonValue[] | Record<string, JsonValue>,
-          });
-        } else {
-          targetArray[index] = child;
-        }
+    const frame = stack.pop()!;
+    if (frame.kind === "exit") {
+      active.delete(frame.value);
+      continue;
+    }
+    if (
+      frame.value === null ||
+      typeof frame.value === "string" ||
+      typeof frame.value === "boolean" ||
+      (typeof frame.value === "number" && Number.isFinite(frame.value))
+    ) {
+      frame.assign(frame.value);
+      continue;
+    }
+    if (
+      (!Array.isArray(frame.value) && !isPlainObject(frame.value)) ||
+      active.has(frame.value)
+    ) {
+      return { ok: false };
+    }
+
+    active.add(frame.value);
+    stack.push({ kind: "exit", value: frame.value });
+    if (Array.isArray(frame.value)) {
+      const cloned = new Array<JsonValue>(frame.value.length);
+      frame.assign(cloned);
+      for (let index = frame.value.length - 1; index >= 0; index -= 1) {
+        stack.push({
+          kind: "value",
+          value: frame.value[index],
+          assign: (child) => {
+            cloned[index] = child;
+          },
+        });
       }
       continue;
     }
 
-    const targetObject = target as Record<string, JsonValue>;
-    for (const key of Object.keys(source)) {
-      const child = source[key]!;
-      if (child !== null && typeof child === "object") {
-        const childClone: JsonValue = Array.isArray(child) ? [] : {};
-        setOwnEnumerableValue(targetObject, key, childClone);
-        stack.push({
-          source: child as JsonValue[] | Record<string, JsonValue>,
-          target: childClone as JsonValue[] | Record<string, JsonValue>,
-        });
-      } else {
-        setOwnEnumerableValue(targetObject, key, child);
-      }
+    const cloned: Record<string, JsonValue> = {};
+    frame.assign(cloned);
+    const keys = Object.keys(frame.value);
+    for (let index = keys.length - 1; index >= 0; index -= 1) {
+      const key = keys[index]!;
+      stack.push({
+        kind: "value",
+        value: frame.value[key],
+        assign: (child) => {
+          setOwnEnumerableValue(cloned, key, child);
+        },
+      });
     }
   }
 
-  return root as TValue;
+  return { ok: true, value: root! };
 }
 
 export function canonicalizeJsonValue(value: JsonValue): string {
-  if (!isJsonValue(value)) {
-    throw new UnsupportedRuntimeValueError(
-      "Cannot canonicalize a cyclic or non-JSON runtime value as JSON.",
-    );
-  }
   const chunks: string[] = [];
+  const active = new WeakSet<object>();
   type Frame =
     | { kind: "value"; value: JsonValue }
-    | { kind: "token"; value: string };
+    | { kind: "token"; value: string }
+    | { kind: "exit"; value: object };
   const stack: Frame[] = [{ kind: "value", value }];
 
   while (stack.length > 0) {
@@ -136,12 +161,31 @@ export function canonicalizeJsonValue(value: JsonValue): string {
       chunks.push(frame.value);
       continue;
     }
+    if (frame.kind === "exit") {
+      active.delete(frame.value);
+      continue;
+    }
     const current = frame.value;
-    if (current === null || typeof current !== "object") {
+    if (
+      current === null ||
+      typeof current === "string" ||
+      typeof current === "boolean" ||
+      (typeof current === "number" && Number.isFinite(current))
+    ) {
       chunks.push(JSON.stringify(current));
       continue;
     }
+    if (
+      (!Array.isArray(current) && !isPlainObject(current)) ||
+      active.has(current)
+    ) {
+      throw new UnsupportedRuntimeValueError(
+        "Cannot canonicalize a cyclic or non-JSON runtime value as JSON.",
+      );
+    }
 
+    active.add(current);
+    stack.push({ kind: "exit", value: current });
     if (Array.isArray(current)) {
       stack.push({ kind: "token", value: "]" });
       for (let index = current.length - 1; index >= 0; index -= 1) {
@@ -240,13 +284,15 @@ export function cloneRuntimeValue<TValue>(
     return adapter.clone(value);
   }
 
-  if (isJsonValue(value)) {
-    return cloneJsonValue(value) as TValue;
+  const clonedJson = tryCloneJsonValue(value);
+  if (clonedJson.ok) {
+    return clonedJson.value as TValue;
   }
 
   if (adapter?.codec) {
     const serialized = adapter.codec.serialize(value);
-    if (!isJsonValue(serialized)) {
+    const clonedSerialized = tryCloneJsonValue(serialized);
+    if (!clonedSerialized.ok) {
       throw new UnsupportedRuntimeValueError(
         `Codec "${adapter.codec.codecId}" returned a non-JSON value from serialize().`,
         {
@@ -254,7 +300,7 @@ export function cloneRuntimeValue<TValue>(
         },
       );
     }
-    return adapter.codec.deserialize(serialized);
+    return adapter.codec.deserialize(clonedSerialized.value);
   }
 
   throw new UnsupportedRuntimeValueError(
@@ -271,8 +317,9 @@ export function encodePersistedValue<TValue>(
   value: TValue,
   adapter?: ValueAdapter<TValue>,
 ): PersistedValue {
-  if (isJsonValue(value)) {
-    return cloneJsonValue(value);
+  const clonedJson = tryCloneJsonValue(value);
+  if (clonedJson.ok) {
+    return clonedJson.value;
   }
 
   const codec = adapter?.codec;
@@ -283,7 +330,8 @@ export function encodePersistedValue<TValue>(
   }
 
   const serialized = codec.serialize(value);
-  if (!isJsonValue(serialized)) {
+  const clonedSerialized = tryCloneJsonValue(serialized);
+  if (!clonedSerialized.ok) {
     throw new UnsupportedRuntimeValueError(
       `Codec "${codec.codecId}" returned a non-JSON value from serialize().`,
       {
@@ -294,7 +342,7 @@ export function encodePersistedValue<TValue>(
 
   return {
     $codec: codec.codecId,
-    value: serialized,
+    value: clonedSerialized.value,
   } satisfies EncodedValue;
 }
 

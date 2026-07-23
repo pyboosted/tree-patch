@@ -3,8 +3,12 @@ import {
   createDocument,
   createResolutionSession,
   diffTrees,
+  preparePatch,
+  validatePatch,
 } from "../dist/index.js";
 import { getNodeHash } from "../dist/core/hash.js";
+import { cloneJsonValue } from "../dist/schema/adapters.js";
+import { compileTreeSchema } from "../dist/schema/schema.js";
 
 function measure(name, run) {
   const started = performance.now();
@@ -89,6 +93,7 @@ const bagTree = (offset, size = 1_000) => createDocument({
 });
 const largeBagBase = bagTree(0, 4_000);
 const largeBagTarget = bagTree(1, 4_000);
+const largeBagConflictBase = bagTree(2, 4_000);
 const insertionBase = emptyTree();
 const insertionTarget = wideTree(8_000, 1);
 const deepApplyBase = deepTree(4_000, 0);
@@ -104,6 +109,17 @@ const largeValueTree = createDocument({
     children: [],
   },
 });
+const largeJsonValue = Array.from({ length: 100_000 }, (_, index) => index);
+const largeAtomicSchema = {
+  types: {
+    Bag: {
+      atomicPaths: Array.from(
+        { length: 10_000 },
+        (_, index) => [`key-${index}`],
+      ),
+    },
+  },
+};
 
 const rows = [];
 let widePatch;
@@ -148,6 +164,11 @@ rows.push(measure("resolution: take base for 1k ops", () => {
   return resolution.build().status;
 }));
 const largeBagPatch = diffTrees(largeBagBase, largeBagTarget);
+const preparedLargeBagPatch = preparePatch(largeBagPatch);
+rows.push(measure("validate: raw 4k-op envelope", () =>
+  validatePatch(largeBagConflictBase, largeBagPatch).status));
+rows.push(measure("validate: prepared 4k-op envelope", () =>
+  validatePatch(largeBagConflictBase, preparedLargeBagPatch).status));
 rows.push(measure("apply: 4k fields on one node", () =>
   applyPatch(largeBagBase, largeBagPatch).status));
 const insertionPatch = diffTrees(insertionBase, insertionTarget);
@@ -158,5 +179,9 @@ rows.push(measure("apply: update 4k-node chain", () =>
   applyPatch(deepApplyBase, deepApplyPatch).status));
 rows.push(measure("hash: 100k primitive values", () =>
   getNodeHash(largeValueTree, "large-value").length));
+rows.push(measure("clone: 100k primitive values", () =>
+  cloneJsonValue(largeJsonValue).length));
+rows.push(measure("schema: compile 10k atomic paths", () =>
+  compileTreeSchema(largeAtomicSchema).types.size));
 
 console.table(rows);

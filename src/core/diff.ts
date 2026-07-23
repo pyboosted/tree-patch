@@ -25,6 +25,7 @@ import {
   UnsupportedTransformError,
 } from "./errors.js";
 import { executePatchInternal } from "./apply.js";
+import { assertPatchEnvelope } from "./patch-validation.js";
 import {
   getNodeHash,
   getPathHash,
@@ -1659,9 +1660,11 @@ export function rebasePatch<TTypes extends NodeTypeMap>(
   patch: TreePatch,
   options: RebaseOptions = {},
 ): RebaseResult<TTypes> {
+  assertPatchEnvelope(patch);
   const sourceValidation = executePatchInternal(oldBase, patch, {
     mode: "preview",
     produceTree: false,
+    patchValidated: true,
   });
   if (
     sourceValidation.conflicts.length > 0 ||
@@ -1682,6 +1685,7 @@ export function rebasePatch<TTypes extends NodeTypeMap>(
   const execution = executePatchInternal(newBase, patch, {
     mode: "preview",
     produceTree: true,
+    patchValidated: true,
   });
 
   const rebasedPatch =

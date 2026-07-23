@@ -6,6 +6,7 @@ import {
   createDocument,
   materialize,
   MissingCodecError,
+  preparePatch,
   UnsupportedPatchOperationError,
   validatePatch,
   type TreeDocument,
@@ -588,6 +589,45 @@ test("empty apply reuses the immutable source snapshot", () => {
 
   assert.equal(result.status, "applied");
   assert.equal(result.tree, source);
+});
+
+test("preparePatch returns a deeply frozen validation-cached clone", () => {
+  const source = createSourceTree();
+  const original: TreePatch = {
+    format: "tree-patch/v1",
+    patchId: "prepared",
+    ops: [{
+      kind: "setAttr",
+      opId: "set-title",
+      nodeId: "hero",
+      path: "/title",
+      value: "Prepared Title",
+      guards: [{
+        kind: "attrEquals",
+        nodeId: "hero",
+        path: "/title",
+        value: "Summer Sale",
+      }],
+    }],
+  };
+  const prepared = preparePatch(original);
+  const preparedOp = prepared.ops[0]!;
+
+  assert.notStrictEqual(prepared, original);
+  assert.equal(Object.isFrozen(prepared), true);
+  assert.equal(Object.isFrozen(prepared.ops), true);
+  assert.equal(Object.isFrozen(preparedOp), true);
+  assert.equal(Object.isFrozen(preparedOp.guards), true);
+  assert.strictEqual(preparePatch(prepared), prepared);
+
+  if (original.ops[0]?.kind === "setAttr") {
+    original.ops[0].value = "Mutated Original";
+  }
+  const first = applyPatch(source, prepared);
+  const second = applyPatch(source, prepared);
+  assert.equal(first.status, "applied");
+  assert.equal(second.status, "applied");
+  assert.equal(first.tree.nodes.get("hero")?.attrs.title, "Prepared Title");
 });
 
 test("unrelated cached hashes survive while touched hashes are invalidated", () => {

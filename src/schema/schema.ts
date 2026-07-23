@@ -75,18 +75,16 @@ function compileNodeRuntimeSpec<TAttrs>(
     parseJsonPointer(pointer);
   }
 
-  for (let index = 0; index < atomicPointers.length; index += 1) {
+  for (let index = 0; index < atomicPointers.length - 1; index += 1) {
     const current = atomicPointers[index]!;
-    for (let scan = index + 1; scan < atomicPointers.length; scan += 1) {
-      const next = atomicPointers[scan]!;
-      if (overlaps(current, next)) {
-        throw new InvalidSchemaError(
-          `Atomic paths "${current}" and "${next}" overlap on node type "${nodeType}".`,
-          {
-            details: { nodeType, left: current, right: next },
-          },
-        );
-      }
+    const next = atomicPointers[index + 1]!;
+    if (overlaps(current, next)) {
+      throw new InvalidSchemaError(
+        `Atomic paths "${current}" and "${next}" overlap on node type "${nodeType}".`,
+        {
+          details: { nodeType, left: current, right: next },
+        },
+      );
     }
   }
 

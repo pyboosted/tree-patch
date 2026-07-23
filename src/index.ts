@@ -1,5 +1,6 @@
 export { createDocument } from "./core/document.js";
 export { applyPatch, materialize, validatePatch } from "./core/apply.js";
+export { preparePatch } from "./core/patch-validation.js";
 export { diffTrees, rebasePatch } from "./core/diff.js";
 export { createEditor, patchBuilder } from "./editor/builder.js";
 export { createResolutionSession } from "./resolution/session.js";

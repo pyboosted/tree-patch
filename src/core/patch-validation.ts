@@ -14,7 +14,9 @@ import {
 } from "./errors.js";
 import { isEncodedValue, isJsonValue } from "../schema/adapters.js";
 import { parseJsonPointer } from "../schema/pointers.js";
-import { isPlainObject } from "./snapshot.js";
+import { deepFreezePlainData, isPlainObject } from "./snapshot.js";
+
+const validatedPreparedPatches = new WeakSet<object>();
 
 function validatePersistedValueShape(value: unknown, location: string): void {
   if (isEncodedValue(value as PersistedValue) || isJsonValue(value)) {
@@ -364,6 +366,14 @@ function assertPatchOp(op: unknown, index: number): asserts op is PatchOp {
 }
 
 export function assertPatchEnvelope(patch: unknown): asserts patch is TreePatch {
+  if (
+    patch !== null &&
+    typeof patch === "object" &&
+    validatedPreparedPatches.has(patch)
+  ) {
+    return;
+  }
+
   if (!patch || typeof patch !== "object" || Array.isArray(patch)) {
     throw new MalformedPatchError("Patch must be an object.", {
       details: { patch },
@@ -411,4 +421,17 @@ export function assertPatchEnvelope(patch: unknown): asserts patch is TreePatch 
     }
     seenOpIds.add(op.opId);
   });
+}
+
+export function preparePatch(patch: TreePatch): TreePatch {
+  if (validatedPreparedPatches.has(patch)) {
+    return patch;
+  }
+
+  assertPatchEnvelope(patch);
+  const prepared = deepFreezePlainData(
+    structuredClone(patch),
+  ) as TreePatch;
+  validatedPreparedPatches.add(prepared);
+  return prepared;
 }

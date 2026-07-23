@@ -26,8 +26,8 @@ import {
   exposeIndexedNode,
 } from "../schema/runtime-clone.js";
 import {
-  cloneJsonValue,
   isJsonValue,
+  tryCloneJsonValue,
 } from "../schema/adapters.js";
 import type { ChildHashAggregate } from "./child-hash.js";
 
@@ -41,17 +41,28 @@ function cloneMetadata(
     return undefined;
   }
 
-  if (!isPlainObject(metadata) || !isJsonValue(metadata)) {
+  if (!isPlainObject(metadata)) {
     throw new MalformedTreeError(
       "Document metadata must be a JSON-serializable object.",
     );
   }
 
   if (ownership === "assumeImmutable") {
+    if (!isJsonValue(metadata)) {
+      throw new MalformedTreeError(
+        "Document metadata must be a JSON-serializable object.",
+      );
+    }
     return metadata;
   }
 
-  return deepFreezePlainData(cloneJsonValue(metadata));
+  const cloned = tryCloneJsonValue(metadata);
+  if (!cloned.ok) {
+    throw new MalformedTreeError(
+      "Document metadata must be a JSON-serializable object.",
+    );
+  }
+  return deepFreezePlainData(cloned.value as JsonObject);
 }
 
 function assertNodeEnvelope(node: unknown, location: string, isRoot: boolean): asserts node is {

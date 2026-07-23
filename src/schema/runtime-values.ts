@@ -6,10 +6,10 @@ import type {
 import { MalformedPatchError, MissingCodecError } from "../core/errors.js";
 import { isPlainObject, setOwnEnumerableValue } from "../core/snapshot.js";
 import {
-  cloneJsonValue,
   deepEqual,
   encodePersistedValue,
   isJsonValue,
+  tryCloneJsonValue,
 } from "./adapters.js";
 import type { CompiledTreeSchema } from "./schema.js";
 import {
@@ -81,7 +81,8 @@ export function encodeRuntimeValueForPointer<TTypes extends NodeTypeMap>(
   value: unknown,
 ): PersistedValue {
   if (!nodeType) {
-    if (!isJsonValue(value)) {
+    const cloned = tryCloneJsonValue(value);
+    if (!cloned.ok) {
       throw new MalformedPatchError(
         `Cannot serialize non-JSON value at pointer "${pointer}" without a source-backed node type.`,
         {
@@ -90,7 +91,7 @@ export function encodeRuntimeValueForPointer<TTypes extends NodeTypeMap>(
       );
     }
 
-    return cloneJsonValue(value);
+    return cloned.value;
   }
 
   let root: PersistedValue | undefined;

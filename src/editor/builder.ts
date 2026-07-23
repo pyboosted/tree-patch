@@ -33,7 +33,7 @@ import { assertPatchEnvelope, normalizePosition } from "../core/patch-validation
 import { isPlainObject } from "../core/snapshot.js";
 import { getTreeState } from "../core/state.js";
 import { pathToPointer, resolvePointer } from "../schema/pointers.js";
-import { cloneJsonValue, isJsonValue } from "../schema/adapters.js";
+import { tryCloneJsonValue } from "../schema/adapters.js";
 import type { CompiledTreeSchema } from "../schema/schema.js";
 import { compileTreeSchema } from "../schema/schema.js";
 import {
@@ -153,14 +153,21 @@ function cloneMetadata(
     return undefined;
   }
 
-  if (!isPlainObject(metadata) || !isJsonValue(metadata)) {
+  if (!isPlainObject(metadata)) {
     throw new MalformedPatchError(
       "Patch metadata must be a JSON-serializable object.",
       { details: { metadata } },
     );
   }
 
-  return cloneJsonValue(metadata);
+  const cloned = tryCloneJsonValue(metadata);
+  if (!cloned.ok) {
+    throw new MalformedPatchError(
+      "Patch metadata must be a JSON-serializable object.",
+      { details: { metadata } },
+    );
+  }
+  return cloned.value as JsonObject;
 }
 
 function getCompiledSchemas<TTypes extends NodeTypeMap>(
