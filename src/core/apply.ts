@@ -40,7 +40,6 @@ import {
   joinJsonPointer,
 } from "./hash.js";
 import {
-  cloneJsonValue,
   cloneRuntimeValue,
   deepEqual,
   isEncodedValue,
@@ -1055,14 +1054,6 @@ function setParentChildIds<TTypes extends NodeTypeMap>(
     childIds: [...childIds],
   });
   overlay.dirtyNodeIds.add(parentId);
-}
-
-function sameNodeIdOrder(left: readonly NodeId[], right: readonly NodeId[]): boolean {
-  if (left.length !== right.length) {
-    return false;
-  }
-
-  return left.every((nodeId, index) => nodeId === right[index]);
 }
 
 function isNodeWithinSubtree<TTypes extends NodeTypeMap>(

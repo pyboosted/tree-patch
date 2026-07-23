@@ -1342,50 +1342,53 @@ function collectReplacementInsertOps<TTypes extends NodeTypeMap>(
   }
 
   function visitReplacementRoot(replacementRootId: NodeId): void {
-    const replacementRoot = context.target.nodes.get(replacementRootId);
-    if (!replacementRoot) {
-      return;
-    }
-
-    function visit(nodeId: NodeId): void {
-      const node = context.target.nodes.get(nodeId);
+    const stack: Array<{ nodeId: NodeId; childIndex: number }> = [{
+      nodeId: replacementRootId,
+      childIndex: 0,
+    }];
+    while (stack.length > 0) {
+      const frame = stack.pop()!;
+      const node = context.target.nodes.get(frame.nodeId);
       if (!node) {
-        return;
+        continue;
+      }
+      if (frame.childIndex >= node.childIds.length) {
+        continue;
       }
 
-      for (const childId of node.childIds) {
-        const childOmitted = isOmittedSourceBackedDescendant(replacementRootId, childId);
-        if (childOmitted) {
-          const parentId = nodeId;
-          const position = makePositionFromTarget(context.target, childId);
-          const op: InsertNodeOp = {
-            kind: "insertNode",
-            opId: context.opIds("insert", childId),
-            parentId,
-            node: serializeInsertedSubtree(
-              {
-                ...context,
-                base: {
-                  ...context.base,
-                  nodes: new Map(),
-                } as IndexedTree<TTypes>,
-              },
-              childId,
-            ),
-            guards: guardsForAnchor(parentId, position),
-          };
-          if (position !== undefined) {
-            op.position = position;
-          }
-          inserts.push(op);
-          continue;
-        }
-
-        visit(childId);
+      stack.push({
+        nodeId: frame.nodeId,
+        childIndex: frame.childIndex + 1,
+      });
+      const childId = node.childIds[frame.childIndex]!;
+      if (!isOmittedSourceBackedDescendant(replacementRootId, childId)) {
+        stack.push({ nodeId: childId, childIndex: 0 });
+        continue;
       }
+
+      const parentId = frame.nodeId;
+      const position = makePositionFromTarget(context.target, childId);
+      const op: InsertNodeOp = {
+        kind: "insertNode",
+        opId: context.opIds("insert", childId),
+        parentId,
+        node: serializeInsertedSubtree(
+          {
+            ...context,
+            base: {
+              ...context.base,
+              nodes: new Map(),
+            } as IndexedTree<TTypes>,
+          },
+          childId,
+        ),
+        guards: guardsForAnchor(parentId, position),
+      };
+      if (position !== undefined) {
+        op.position = position;
+      }
+      inserts.push(op);
     }
-
-    visit(replacementRootId);
   }
 
   [...context.replacementRoots]
