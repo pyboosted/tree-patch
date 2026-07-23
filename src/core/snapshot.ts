@@ -160,22 +160,32 @@ export function isPlainObject(value: unknown): value is Record<string, unknown> 
 }
 
 export function deepFreezePlainData<T>(value: T): T {
-  if (Object.isFrozen(value)) {
-    return value;
+  const stack: unknown[] = [value];
+  const visited = new WeakSet<object>();
+  const containers: object[] = [];
+
+  while (stack.length > 0) {
+    const current = stack.pop();
+    if (
+      current === null ||
+      typeof current !== "object" ||
+      Object.isFrozen(current) ||
+      (!Array.isArray(current) && !isPlainObject(current)) ||
+      visited.has(current)
+    ) {
+      continue;
+    }
+
+    visited.add(current);
+    containers.push(current);
+    const children = Array.isArray(current) ? current : Object.values(current);
+    for (const child of children) {
+      stack.push(child);
+    }
   }
 
-  if (Array.isArray(value)) {
-    value.forEach((item) => {
-      deepFreezePlainData(item);
-    });
-    return Object.freeze(value);
-  }
-
-  if (isPlainObject(value)) {
-    Object.values(value).forEach((item) => {
-      deepFreezePlainData(item);
-    });
-    return Object.freeze(value) as T;
+  for (let index = containers.length - 1; index >= 0; index -= 1) {
+    Object.freeze(containers[index]!);
   }
 
   return value;

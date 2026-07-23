@@ -6,6 +6,7 @@ import {
   defaultJsonValueAdapter,
   encodePersistedValue,
   MissingCodecError,
+  UnsupportedRuntimeValueError,
 } from "../src/index.js";
 
 const dateCodec = {
@@ -89,5 +90,30 @@ test("the reserved codec envelope shape is not treated as ordinary JSON user dat
         },
       }),
     MissingCodecError,
+  );
+});
+
+test("default JSON operations are stack-safe and reject cyclic input explicitly", () => {
+  let deep: Record<string, unknown> = { value: "leaf" };
+  for (let depth = 0; depth < 20_000; depth += 1) {
+    deep = { next: deep };
+  }
+
+  const clone = defaultJsonValueAdapter.clone!(deep as never) as Record<string, unknown>;
+  assert.equal(defaultJsonValueAdapter.equals(deep as never, clone as never), true);
+  assert.equal(
+    defaultJsonValueAdapter.hash!(deep as never),
+    defaultJsonValueAdapter.hash!(clone as never),
+  );
+
+  const cyclic: Record<string, unknown> = {};
+  cyclic.self = cyclic;
+  assert.throws(
+    () => defaultJsonValueAdapter.clone!(cyclic as never),
+    UnsupportedRuntimeValueError,
+  );
+  assert.throws(
+    () => defaultJsonValueAdapter.hash!(cyclic as never),
+    UnsupportedRuntimeValueError,
   );
 });

@@ -49,54 +49,119 @@ function hashStructuredValue(
   tree: IndexedTree<NodeTypeMap>,
 ): string {
   const state = getTreeState(tree);
-  const adapter = getValueAdapterForPointer(state.schema, nodeType, pointer);
+  type Frame =
+    | { kind: "value"; value: unknown; pointer: JsonPointer }
+    | {
+        kind: "container";
+        value: object;
+        containerKind: "array" | "object";
+        keys: readonly string[];
+        childCount: number;
+      };
+  const stack: Frame[] = [{ kind: "value", value, pointer }];
+  const hashes: string[] = [];
+  const active = new WeakSet<object>();
 
-  if (adapter || isAtomicPointer(state.schema, nodeType, pointer)) {
-    return hashOpaqueValue(value, adapter, pointer);
-  }
+  while (stack.length > 0) {
+    const frame = stack.pop()!;
+    if (frame.kind === "container") {
+      active.delete(frame.value);
+      const childHashes = hashes.splice(hashes.length - frame.childCount);
+      if (frame.containerKind === "array") {
+        hashes.push(hashStableParts(["array", ...childHashes]));
+      } else {
+        hashes.push(hashStableParts([
+          "object",
+          ...frame.keys.map((key, index) =>
+            hashStableParts([
+              "entry",
+              JSON.stringify(key),
+              childHashes[index]!,
+            ]),
+          ),
+        ]));
+      }
+      continue;
+    }
 
-  if (value === null || typeof value === "string" || typeof value === "boolean") {
-    return hashStableParts(["primitive", JSON.stringify(value)]);
-  }
-
-  if (typeof value === "number") {
-    if (!Number.isFinite(value)) {
+    const adapter = getValueAdapterForPointer(
+      state.schema,
+      nodeType,
+      frame.pointer,
+    );
+    if (adapter || isAtomicPointer(state.schema, nodeType, frame.pointer)) {
+      hashes.push(hashOpaqueValue(frame.value, adapter, frame.pointer));
+      continue;
+    }
+    if (
+      frame.value === null ||
+      typeof frame.value === "string" ||
+      typeof frame.value === "boolean"
+    ) {
+      hashes.push(hashStableParts(["primitive", JSON.stringify(frame.value)]));
+      continue;
+    }
+    if (typeof frame.value === "number") {
+      if (!Number.isFinite(frame.value)) {
+        throw new UnsupportedRuntimeValueError(
+          `Non-finite number at pointer "${frame.pointer}" is not supported.`,
+          { details: { pointer: frame.pointer } },
+        );
+      }
+      hashes.push(hashStableParts(["primitive", JSON.stringify(frame.value)]));
+      continue;
+    }
+    if (!Array.isArray(frame.value) && !isPlainObject(frame.value)) {
       throw new UnsupportedRuntimeValueError(
-        `Non-finite number at pointer "${pointer}" is not supported.`,
-        {
-          details: { pointer },
-        },
+        `Value at pointer "${frame.pointer}" is not JSON-compatible and has no registered adapter.`,
+        { details: { pointer: frame.pointer } },
+      );
+    }
+    if (active.has(frame.value)) {
+      throw new UnsupportedRuntimeValueError(
+        `Cyclic runtime value at pointer "${frame.pointer}" is not supported.`,
+        { details: { pointer: frame.pointer } },
       );
     }
 
-    return hashStableParts(["primitive", JSON.stringify(value)]);
+    active.add(frame.value);
+    if (Array.isArray(frame.value)) {
+      stack.push({
+        kind: "container",
+        value: frame.value,
+        containerKind: "array",
+        keys: [],
+        childCount: frame.value.length,
+      });
+      for (let index = frame.value.length - 1; index >= 0; index -= 1) {
+        stack.push({
+          kind: "value",
+          value: frame.value[index],
+          pointer: joinPointer(frame.pointer, index),
+        });
+      }
+      continue;
+    }
+
+    const keys = Object.keys(frame.value).sort();
+    stack.push({
+      kind: "container",
+      value: frame.value,
+      containerKind: "object",
+      keys,
+      childCount: keys.length,
+    });
+    for (let index = keys.length - 1; index >= 0; index -= 1) {
+      const key = keys[index]!;
+      stack.push({
+        kind: "value",
+        value: frame.value[key],
+        pointer: joinPointer(frame.pointer, key),
+      });
+    }
   }
 
-  if (Array.isArray(value)) {
-    const childHashes = value.map((item, index) =>
-      hashStructuredValue(item, nodeType, joinPointer(pointer, index), tree),
-    );
-    return hashStableParts(["array", ...childHashes]);
-  }
-
-  if (isPlainObject(value)) {
-    const keys = Object.keys(value).sort();
-    const childHashes = keys.map((key) =>
-      hashStableParts([
-        "entry",
-        JSON.stringify(key),
-        hashStructuredValue(value[key], nodeType, joinPointer(pointer, key), tree),
-      ]),
-    );
-    return hashStableParts(["object", ...childHashes]);
-  }
-
-  throw new UnsupportedRuntimeValueError(
-    `Value at pointer "${pointer}" is not JSON-compatible and has no registered adapter.`,
-    {
-      details: { pointer },
-    },
-  );
+  return hashes[0]!;
 }
 
 function getNodeOrThrow<TTypes extends NodeTypeMap>(
@@ -165,11 +230,42 @@ export function getSubtreeHash<TTypes extends NodeTypeMap>(
     return cached;
   }
 
-  const node = getNodeOrThrow(tree, nodeId);
-  const childHashes = node.childIds.map((childId) => getSubtreeHash(tree, childId));
-  const subtreeHash = hashStableParts(["subtree", getNodeHash(tree, nodeId), ...childHashes]);
-  state.cache.subtreeHashById.set(nodeId, subtreeHash);
-  return subtreeHash;
+  const stack: Array<{ nodeId: string; exit?: true }> = [{ nodeId }];
+  while (stack.length > 0) {
+    const frame = stack.pop()!;
+    if (state.cache.subtreeHashById.has(frame.nodeId)) {
+      continue;
+    }
+
+    const node = getNodeOrThrow(tree, frame.nodeId);
+    if (frame.exit) {
+      const childHashes = node.childIds.map((childId) => {
+        const childHash = state.cache.subtreeHashById.get(childId);
+        if (!childHash) {
+          throw new InvalidPointerError(
+            childId,
+            `Node "${childId}" cannot be hashed before its descendants.`,
+          );
+        }
+        return childHash;
+      });
+      state.cache.subtreeHashById.set(
+        frame.nodeId,
+        hashStableParts(["subtree", getNodeHash(tree, frame.nodeId), ...childHashes]),
+      );
+      continue;
+    }
+
+    stack.push({ nodeId: frame.nodeId, exit: true });
+    for (let index = node.childIds.length - 1; index >= 0; index -= 1) {
+      const childId = node.childIds[index]!;
+      if (!state.cache.subtreeHashById.has(childId)) {
+        stack.push({ nodeId: childId });
+      }
+    }
+  }
+
+  return state.cache.subtreeHashById.get(nodeId)!;
 }
 
 export function getTreeRevisionHash<TTypes extends NodeTypeMap>(

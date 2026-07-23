@@ -8,10 +8,8 @@ import {
   isPlainObject,
   setOwnEnumerableValue,
 } from "../core/snapshot.js";
-import {
-  cloneRuntimeValue,
-  isJsonValue,
-} from "./adapters.js";
+import { UnsupportedRuntimeValueError } from "../core/errors.js";
+import { cloneRuntimeValue } from "./adapters.js";
 import type { CompiledTreeSchema } from "./schema.js";
 import {
   getNodeRuntimeSpec,
@@ -29,72 +27,92 @@ export function cloneRuntimeTreeValue<TTypes extends NodeTypeMap>(
   pointer: JsonPointer,
   value: unknown,
 ): unknown {
-  const adapter = getValueAdapterForPointer(schema, nodeType, pointer);
-  if (adapter) {
-    return cloneRuntimeValue(value, adapter, pointer);
-  }
-
-  if (isJsonValue(value)) {
-    if (Array.isArray(value)) {
-      return value.map((item, index) =>
-        cloneRuntimeTreeValue(
-          schema,
-          nodeType,
-          joinPointer(pointer, index),
-          item,
-        ),
-      );
-    }
-
-    if (isPlainObject(value)) {
-      const clone: Record<string, unknown> = {};
-      for (const key of Object.keys(value)) {
-        setOwnEnumerableValue(
-          clone,
-          key,
-          cloneRuntimeTreeValue(
-            schema,
-            nodeType,
-            joinPointer(pointer, key),
-            value[key],
-          ),
-        );
+  let root: unknown;
+  const active = new WeakSet<object>();
+  type Frame =
+    | {
+        kind: "value";
+        value: unknown;
+        pointer: JsonPointer;
+        assign: (next: unknown) => void;
       }
-      return clone;
+    | { kind: "exit"; value: object };
+  const stack: Frame[] = [{
+    kind: "value",
+    value,
+    pointer,
+    assign: (next) => {
+      root = next;
+    },
+  }];
+
+  while (stack.length > 0) {
+    const frame = stack.pop()!;
+    if (frame.kind === "exit") {
+      active.delete(frame.value);
+      continue;
     }
 
-    return value;
-  }
-
-  if (Array.isArray(value)) {
-    return value.map((item, index) =>
-      cloneRuntimeTreeValue(
-        schema,
-        nodeType,
-        joinPointer(pointer, index),
-        item,
-      ),
-    );
-  }
-
-  if (isPlainObject(value)) {
-    const clone: Record<string, unknown> = {};
-    for (const key of Object.keys(value)) {
-      setOwnEnumerableValue(
-        clone,
-        key,
-        cloneRuntimeTreeValue(
-          schema,
-          nodeType,
-          joinPointer(pointer, key),
-          value[key],
-        ),
+    const adapter = getValueAdapterForPointer(schema, nodeType, frame.pointer);
+    if (adapter) {
+      frame.assign(cloneRuntimeValue(frame.value, adapter, frame.pointer));
+      continue;
+    }
+    if (
+      frame.value === null ||
+      typeof frame.value === "string" ||
+      typeof frame.value === "boolean" ||
+      (typeof frame.value === "number" && Number.isFinite(frame.value))
+    ) {
+      frame.assign(frame.value);
+      continue;
+    }
+    if (!Array.isArray(frame.value) && !isPlainObject(frame.value)) {
+      frame.assign(cloneRuntimeValue(frame.value, undefined, frame.pointer));
+      continue;
+    }
+    if (active.has(frame.value)) {
+      throw new UnsupportedRuntimeValueError(
+        `Cyclic runtime value at pointer "${frame.pointer}" is not supported.`,
+        { details: { pointer: frame.pointer } },
       );
     }
-    return clone;
+
+    active.add(frame.value);
+    stack.push({ kind: "exit", value: frame.value });
+    if (Array.isArray(frame.value)) {
+      const clone: unknown[] = new Array(frame.value.length);
+      frame.assign(clone);
+      for (let index = frame.value.length - 1; index >= 0; index -= 1) {
+        stack.push({
+          kind: "value",
+          value: frame.value[index],
+          pointer: joinPointer(frame.pointer, index),
+          assign: (next) => {
+            clone[index] = next;
+          },
+        });
+      }
+      continue;
+    }
+
+    const clone: Record<string, unknown> = {};
+    frame.assign(clone);
+    const keys = Object.keys(frame.value);
+    for (let index = keys.length - 1; index >= 0; index -= 1) {
+      const key = keys[index]!;
+      stack.push({
+        kind: "value",
+        value: frame.value[key],
+        pointer: joinPointer(frame.pointer, key),
+        assign: (next) => {
+          setOwnEnumerableValue(clone, key, next);
+        },
+      });
+    }
   }
 
-  return cloneRuntimeValue(value, undefined, pointer);
+  return root;
 }
 
 export function exposeRuntimeAttrs<TTypes extends NodeTypeMap>(

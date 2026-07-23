@@ -6,6 +6,7 @@ import {
   DuplicateIdError,
   InvalidRootError,
   MalformedTreeError,
+  UnsupportedRuntimeValueError,
 } from "../src/index.js";
 
 type ContentTypes = {
@@ -131,5 +132,25 @@ test("createDocument rejects cyclic trees as malformed input", () => {
   assert.throws(
     () => createDocument<ContentTypes>({ root: root as unknown as Parameters<typeof createDocument<ContentTypes>>[0]["root"] }),
     MalformedTreeError,
+  );
+});
+
+test("createDocument rejects cyclic attribute values with a typed runtime error", () => {
+  const attrs: Record<string, unknown> = {};
+  attrs.self = attrs;
+
+  assert.throws(
+    () =>
+      createDocument<{
+        Page: Record<string, unknown>;
+      }>({
+        root: {
+          id: "root",
+          type: "Page",
+          attrs,
+          children: [],
+        },
+      }),
+    UnsupportedRuntimeValueError,
   );
 });

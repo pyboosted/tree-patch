@@ -61,79 +61,174 @@ export function isJsonValue(value: unknown): value is JsonValue {
 }
 
 export function cloneJsonValue<TValue extends JsonValue>(value: TValue): TValue {
+  if (!isJsonValue(value)) {
+    throw new UnsupportedRuntimeValueError(
+      "Cannot clone a cyclic or non-JSON runtime value as JSON.",
+    );
+  }
   if (value === null || typeof value !== "object") {
     return value;
   }
 
-  if (Array.isArray(value)) {
-    return value.map((item) => cloneJsonValue(item)) as TValue;
+  const root: JsonValue = Array.isArray(value) ? [] : {};
+  const stack: Array<{ source: JsonValue[] | Record<string, JsonValue>; target: JsonValue[] | Record<string, JsonValue> }> = [
+    {
+      source: value as JsonValue[] | Record<string, JsonValue>,
+      target: root as JsonValue[] | Record<string, JsonValue>,
+    },
+  ];
+
+  while (stack.length > 0) {
+    const { source, target } = stack.pop()!;
+    if (Array.isArray(source)) {
+      const targetArray = target as JsonValue[];
+      targetArray.length = source.length;
+      for (let index = source.length - 1; index >= 0; index -= 1) {
+        const child = source[index]!;
+        if (child !== null && typeof child === "object") {
+          const childClone: JsonValue = Array.isArray(child) ? [] : {};
+          targetArray[index] = childClone;
+          stack.push({
+            source: child as JsonValue[] | Record<string, JsonValue>,
+            target: childClone as JsonValue[] | Record<string, JsonValue>,
+          });
+        } else {
+          targetArray[index] = child;
+        }
+      }
+      continue;
+    }
+
+    const targetObject = target as Record<string, JsonValue>;
+    for (const key of Object.keys(source)) {
+      const child = source[key]!;
+      if (child !== null && typeof child === "object") {
+        const childClone: JsonValue = Array.isArray(child) ? [] : {};
+        setOwnEnumerableValue(targetObject, key, childClone);
+        stack.push({
+          source: child as JsonValue[] | Record<string, JsonValue>,
+          target: childClone as JsonValue[] | Record<string, JsonValue>,
+        });
+      } else {
+        setOwnEnumerableValue(targetObject, key, child);
+      }
+    }
   }
 
-  const clone: Record<string, JsonValue> = {};
-  for (const key of Object.keys(value)) {
-    setOwnEnumerableValue(clone, key, cloneJsonValue(value[key] as JsonValue));
-  }
-  return clone as TValue;
+  return root as TValue;
 }
 
 export function canonicalizeJsonValue(value: JsonValue): string {
-  if (value === null) {
-    return "null";
+  if (!isJsonValue(value)) {
+    throw new UnsupportedRuntimeValueError(
+      "Cannot canonicalize a cyclic or non-JSON runtime value as JSON.",
+    );
+  }
+  const chunks: string[] = [];
+  type Frame =
+    | { kind: "value"; value: JsonValue }
+    | { kind: "token"; value: string };
+  const stack: Frame[] = [{ kind: "value", value }];
+
+  while (stack.length > 0) {
+    const frame = stack.pop()!;
+    if (frame.kind === "token") {
+      chunks.push(frame.value);
+      continue;
+    }
+    const current = frame.value;
+    if (current === null || typeof current !== "object") {
+      chunks.push(JSON.stringify(current));
+      continue;
+    }
+
+    if (Array.isArray(current)) {
+      stack.push({ kind: "token", value: "]" });
+      for (let index = current.length - 1; index >= 0; index -= 1) {
+        stack.push({ kind: "value", value: current[index]! });
+        if (index > 0) {
+          stack.push({ kind: "token", value: "," });
+        }
+      }
+      stack.push({ kind: "token", value: "[" });
+      continue;
+    }
+
+    const keys = Object.keys(current).sort();
+    stack.push({ kind: "token", value: "}" });
+    for (let index = keys.length - 1; index >= 0; index -= 1) {
+      const key = keys[index]!;
+      stack.push({ kind: "value", value: current[key]! });
+      stack.push({ kind: "token", value: `${JSON.stringify(key)}:` });
+      if (index > 0) {
+        stack.push({ kind: "token", value: "," });
+      }
+    }
+    stack.push({ kind: "token", value: "{" });
   }
 
-  if (typeof value !== "object") {
-    return JSON.stringify(value);
-  }
-
-  if (Array.isArray(value)) {
-    return `[${value.map((item) => canonicalizeJsonValue(item)).join(",")}]`;
-  }
-
-  const keys = Object.keys(value).sort();
-  const entries = keys.map(
-    (key) => `${JSON.stringify(key)}:${canonicalizeJsonValue(value[key] as JsonValue)}`,
-  );
-  return `{${entries.join(",")}}`;
+  return chunks.join("");
 }
 
 export function deepEqual(left: unknown, right: unknown): boolean {
-  if (Object.is(left, right)) {
-    return true;
-  }
+  const stack: Array<readonly [unknown, unknown]> = [[left, right]];
+  const visited = new WeakMap<object, WeakSet<object>>();
 
-  if (left === null || right === null) {
-    return left === right;
-  }
-
-  if (typeof left !== typeof right) {
-    return false;
-  }
-
-  if (Array.isArray(left) && Array.isArray(right)) {
-    if (left.length !== right.length) {
+  while (stack.length > 0) {
+    const [currentLeft, currentRight] = stack.pop()!;
+    if (Object.is(currentLeft, currentRight)) {
+      continue;
+    }
+    if (
+      currentLeft === null ||
+      currentRight === null ||
+      typeof currentLeft !== "object" ||
+      typeof currentRight !== "object"
+    ) {
       return false;
     }
 
-    return left.every((item, index) => deepEqual(item, right[index]));
-  }
-
-  if (isPlainObject(left) && isPlainObject(right)) {
-    const leftKeys = Object.keys(left).sort();
-    const rightKeys = Object.keys(right).sort();
-    if (leftKeys.length !== rightKeys.length) {
-      return false;
+    let rightValues = visited.get(currentLeft);
+    if (rightValues?.has(currentRight)) {
+      continue;
     }
+    if (!rightValues) {
+      rightValues = new WeakSet<object>();
+      visited.set(currentLeft, rightValues);
+    }
+    rightValues.add(currentRight);
 
-    return leftKeys.every((key, index) => {
-      if (key !== rightKeys[index]) {
+    if (Array.isArray(currentLeft) || Array.isArray(currentRight)) {
+      if (
+        !Array.isArray(currentLeft) ||
+        !Array.isArray(currentRight) ||
+        currentLeft.length !== currentRight.length
+      ) {
         return false;
       }
+      for (let index = 0; index < currentLeft.length; index += 1) {
+        stack.push([currentLeft[index], currentRight[index]]);
+      }
+      continue;
+    }
 
-      return deepEqual(left[key], right[key]);
-    });
+    if (!isPlainObject(currentLeft) || !isPlainObject(currentRight)) {
+      return false;
+    }
+    const leftKeys = Object.keys(currentLeft).sort();
+    const rightKeys = Object.keys(currentRight).sort();
+    if (
+      leftKeys.length !== rightKeys.length ||
+      leftKeys.some((key, index) => key !== rightKeys[index])
+    ) {
+      return false;
+    }
+    for (const key of leftKeys) {
+      stack.push([currentLeft[key], currentRight[key]]);
+    }
   }
 
-  return false;
+  return true;
 }
 
 export function cloneRuntimeValue<TValue>(
