@@ -138,3 +138,39 @@ test("batched resolution decisions defer replay until state is observed", () => 
   assert.equal(result.status, "resolved");
   assert.equal(result.appliedOpIds.length, 0);
 });
+
+test("field-heavy patches copy an attribute container once per execution session", () => {
+  const makeBagTree = (offset: number) =>
+    createDocument<PerfTypes>({
+      root: {
+        id: "root",
+        type: "Bag",
+        attrs: Object.fromEntries(
+          Array.from({ length: 2_000 }, (_, index) => [
+            `key-${index}`,
+            index + offset,
+          ]),
+        ),
+        children: [],
+      },
+    });
+  const base = makeBagTree(0);
+  const patch = diffTrees(base, makeBagTree(1));
+  const result = applyPatch(base, patch);
+
+  assert.equal(patch.ops.length, 2_000);
+  assert.equal(result.status, "applied");
+  assert.equal(result.tree.nodes.get("root")?.attrs["key-1999"], 2_000);
+  assert.equal(base.nodes.get("root")?.attrs["key-1999"], 1_999);
+});
+
+test("repeated deep edits stop invalidation at an already-dirty ancestor", () => {
+  const size = 2_000;
+  const base = createChangedChain(size, 0);
+  const patch = diffTrees(base, createChangedChain(size, 1));
+  const result = applyPatch(base, patch);
+
+  assert.equal(patch.ops.length, size);
+  assert.equal(result.status, "applied");
+  assert.equal(result.tree.nodes.get(`deep-${size - 1}`)?.attrs.value, size);
+});

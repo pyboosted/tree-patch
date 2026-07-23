@@ -88,8 +88,12 @@ export function invalidateNodeCaches<TTypes extends NodeTypeMap>(
 
   let current: NodeId | null | undefined = nodeId;
   while (current != null) {
+    const alreadyDirty = overlay.dirtySubtreeNodeIds.has(current);
     overlay.cache.subtreeHashById.delete(current);
     overlay.dirtySubtreeNodeIds.add(current);
+    if (alreadyDirty) {
+      break;
+    }
     current = overlay.index.parentById.get(current);
   }
 }
@@ -100,8 +104,12 @@ export function invalidateSubtreeHashes<TTypes extends NodeTypeMap>(
 ): void {
   let current: NodeId | null | undefined = nodeId;
   while (current != null) {
+    const alreadyDirty = overlay.dirtySubtreeNodeIds.has(current);
     overlay.cache.subtreeHashById.delete(current);
     overlay.dirtySubtreeNodeIds.add(current);
+    if (alreadyDirty) {
+      break;
+    }
     current = overlay.index.parentById.get(current);
   }
 }

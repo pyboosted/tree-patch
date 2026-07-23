@@ -73,6 +73,7 @@ import {
 interface ExecutionContext<TTypes extends NodeTypeMap> {
   readonly overlay: OverlayState<TTypes>;
   readonly siblingOrders: Map<NodeId, MutableSiblingOrder>;
+  readonly ownedAttrContainers: WeakSet<object>;
 }
 
 interface MutableSiblingOrder {
@@ -89,6 +90,7 @@ export interface PatchExecutionSession<TTypes extends NodeTypeMap> {
   readonly overlay: OverlayState<TTypes>;
   readonly tree: IndexedTree<TTypes>;
   readonly siblingOrders: Map<NodeId, MutableSiblingOrder>;
+  readonly ownedAttrContainers: WeakSet<object>;
 }
 
 export interface ExecutePatchInternalResult<TTypes extends NodeTypeMap> {
@@ -336,32 +338,64 @@ function decodeSerializedAttrs<TTypes extends NodeTypeMap>(
   return root;
 }
 
+function cloneAttrContainer(
+  container: unknown[] | Record<string, unknown>,
+  ownedContainers: WeakSet<object>,
+): unknown[] | Record<string, unknown> {
+  if (Array.isArray(container)) {
+    const clone = container.slice();
+    ownedContainers.add(clone);
+    return clone;
+  }
+
+  const clone: Record<string, unknown> = {};
+  for (const key of Object.keys(container)) {
+    setOwnEnumerableValue(clone, key, container[key]);
+  }
+  ownedContainers.add(clone);
+  return clone;
+}
+
+function ensureOwnedAttrContainer(
+  container: unknown[] | Record<string, unknown>,
+  ownedContainers: WeakSet<object>,
+): unknown[] | Record<string, unknown> {
+  return ownedContainers.has(container)
+    ? container
+    : cloneAttrContainer(container, ownedContainers);
+}
+
+function readArrayIndex(
+  segment: string,
+  array: readonly unknown[],
+): number | undefined {
+  if (!/^(0|[1-9]\d*)$/.test(segment)) {
+    return undefined;
+  }
+  const index = Number(segment);
+  return index >= 0 && index < array.length ? index : undefined;
+}
+
 function setObjectValue(
   current: unknown,
   segments: readonly string[],
   value: unknown,
+  ownedContainers: WeakSet<object>,
 ): { ok: true; next: unknown } | { ok: false } {
   if (segments.length === 0) {
     return { ok: true, next: value };
   }
 
-  const parents: Array<{
-    container: unknown[] | Record<string, unknown>;
-    key: number | string;
-  }> = [];
+  // Validate the complete path before mutating an already-owned draft.
   let cursor = current;
   for (let index = 0; index < segments.length; index += 1) {
     const segment = segments[index]!;
     const isLast = index === segments.length - 1;
     if (Array.isArray(cursor)) {
-      if (!/^(0|[1-9]\d*)$/.test(segment)) {
+      const arrayIndex = readArrayIndex(segment, cursor);
+      if (arrayIndex === undefined) {
         return { ok: false };
       }
-      const arrayIndex = Number(segment);
-      if (arrayIndex < 0 || arrayIndex >= cursor.length) {
-        return { ok: false };
-      }
-      parents.push({ container: cursor, key: arrayIndex });
       if (!isLast) {
         cursor = cursor[arrayIndex];
       }
@@ -370,7 +404,6 @@ function setObjectValue(
     if (!isPlainObject(cursor)) {
       return { ok: false };
     }
-    parents.push({ container: cursor, key: segment });
     if (!isLast) {
       const existing = Object.hasOwn(cursor, segment)
         ? cursor[segment]
@@ -386,78 +419,123 @@ function setObjectValue(
     }
   }
 
-  let next = value;
-  for (let index = parents.length - 1; index >= 0; index -= 1) {
-    const { container, key } = parents[index]!;
-    if (Array.isArray(container)) {
-      const clone = container.slice();
-      clone[key as number] = next;
-      next = clone;
-    } else {
-      const clone = { ...container };
-      setOwnEnumerableValue(clone, key as string, next);
-      next = clone;
-    }
+  if (!Array.isArray(current) && !isPlainObject(current)) {
+    return { ok: false };
   }
-  return { ok: true, next };
+  const root = ensureOwnedAttrContainer(current, ownedContainers);
+  let draft = root;
+  for (let index = 0; index < segments.length; index += 1) {
+    const segment = segments[index]!;
+    const isLast = index === segments.length - 1;
+    if (Array.isArray(draft)) {
+      const arrayIndex = readArrayIndex(segment, draft)!;
+      if (isLast) {
+        draft[arrayIndex] = value;
+        break;
+      }
+      const existing = draft[arrayIndex];
+      if (existing === undefined) {
+        const created: Record<string, unknown> = {};
+        ownedContainers.add(created);
+        draft[arrayIndex] = created;
+        draft = created;
+        continue;
+      }
+      const child = ensureOwnedAttrContainer(
+        existing as unknown[] | Record<string, unknown>,
+        ownedContainers,
+      );
+      draft[arrayIndex] = child;
+      draft = child;
+      continue;
+    }
+
+    if (isLast) {
+      setOwnEnumerableValue(draft, segment, value);
+      break;
+    }
+    const existing = Object.hasOwn(draft, segment)
+      ? draft[segment]
+      : undefined;
+    if (existing === undefined) {
+      const created: Record<string, unknown> = {};
+      ownedContainers.add(created);
+      setOwnEnumerableValue(draft, segment, created);
+      draft = created;
+      continue;
+    }
+    const child = ensureOwnedAttrContainer(
+      existing as unknown[] | Record<string, unknown>,
+      ownedContainers,
+    );
+    setOwnEnumerableValue(draft, segment, child);
+    draft = child;
+  }
+  return { ok: true, next: root };
 }
 
 function removeObjectValue(
   current: unknown,
   segments: readonly string[],
+  ownedContainers: WeakSet<object>,
 ): { ok: true; next: unknown } | { ok: false } {
   if (segments.length === 0) {
     return { ok: false };
   }
 
-  const parents: Array<{
-    container: unknown[] | Record<string, unknown>;
-    key: number | string;
-  }> = [];
+  // Validate first so a failed operation cannot partially mutate a draft.
   let cursor = current;
   for (let index = 0; index < segments.length; index += 1) {
     const segment = segments[index]!;
     if (Array.isArray(cursor)) {
-      if (!/^(0|[1-9]\d*)$/.test(segment)) {
+      const arrayIndex = readArrayIndex(segment, cursor);
+      if (arrayIndex === undefined) {
         return { ok: false };
       }
-      const arrayIndex = Number(segment);
-      if (arrayIndex < 0 || arrayIndex >= cursor.length) {
-        return { ok: false };
-      }
-      parents.push({ container: cursor, key: arrayIndex });
       cursor = cursor[arrayIndex];
       continue;
     }
     if (!isPlainObject(cursor) || !Object.hasOwn(cursor, segment)) {
       return { ok: false };
     }
-    parents.push({ container: cursor, key: segment });
     cursor = cursor[segment];
   }
 
-  let next: unknown;
-  for (let index = parents.length - 1; index >= 0; index -= 1) {
-    const { container, key } = parents[index]!;
-    if (Array.isArray(container)) {
-      const clone = container.slice();
-      if (index === parents.length - 1) {
-        clone.splice(key as number, 1);
-      } else {
-        clone[key as number] = next;
-      }
-      next = clone;
-    } else {
-      const clone = { ...container };
-      if (index === parents.length - 1) {
-        delete clone[key as string];
-      } else {
-        setOwnEnumerableValue(clone, key as string, next);
-      }
-      next = clone;
-    }
+  if (!Array.isArray(current) && !isPlainObject(current)) {
+    return { ok: false };
   }
-  return { ok: true, next };
+  const root = ensureOwnedAttrContainer(current, ownedContainers);
+  let draft = root;
+  for (let index = 0; index < segments.length; index += 1) {
+    const segment = segments[index]!;
+    const isLast = index === segments.length - 1;
+    if (Array.isArray(draft)) {
+      const arrayIndex = readArrayIndex(segment, draft)!;
+      if (isLast) {
+        draft.splice(arrayIndex, 1);
+        break;
+      }
+      const child = ensureOwnedAttrContainer(
+        draft[arrayIndex] as unknown[] | Record<string, unknown>,
+        ownedContainers,
+      );
+      draft[arrayIndex] = child;
+      draft = child;
+      continue;
+    }
+
+    if (isLast) {
+      delete draft[segment];
+      break;
+    }
+    const child = ensureOwnedAttrContainer(
+      draft[segment] as unknown[] | Record<string, unknown>,
+      ownedContainers,
+    );
+    setOwnEnumerableValue(draft, segment, child);
+    draft = child;
+  }
+  return { ok: true, next: root };
 }
 
 function evaluateGuards<TTypes extends NodeTypeMap>(
@@ -861,7 +939,12 @@ function applySetAttr<TTypes extends NodeTypeMap>(
     op.path,
     decodePersistedForPointer(context.overlay, String(node.type), op.path, op.value),
   );
-  const result = setObjectValue(node.attrs, parseJsonPointer(op.path), decodedValue);
+  const result = setObjectValue(
+    node.attrs,
+    parseJsonPointer(op.path),
+    decodedValue,
+    context.ownedAttrContainers,
+  );
   if (!result.ok) {
     return {
       ok: false,
@@ -901,7 +984,11 @@ function applyRemoveAttr<TTypes extends NodeTypeMap>(
     return guards;
   }
 
-  const result = removeObjectValue(node.attrs, parseJsonPointer(op.path));
+  const result = removeObjectValue(
+    node.attrs,
+    parseJsonPointer(op.path),
+    context.ownedAttrContainers,
+  );
   if (!result.ok) {
     return {
       ok: false,
@@ -1524,6 +1611,7 @@ export function createPatchExecutionSession<TTypes extends NodeTypeMap>(
     overlay,
     tree: overlay.treeView,
     siblingOrders: new Map(),
+    ownedAttrContainers: new WeakSet(),
   };
 }
 
@@ -1534,6 +1622,7 @@ export function applyOperationInSession<TTypes extends NodeTypeMap>(
   const context = {
     overlay: session.overlay,
     siblingOrders: session.siblingOrders,
+    ownedAttrContainers: session.ownedAttrContainers,
   };
   const result = applyOperation(context, op);
   clearSiblingOrders(context);
@@ -1733,6 +1822,7 @@ export function executePatchInternal<TTypes extends NodeTypeMap>(
   const context: ExecutionContext<TTypes> = {
     overlay: session.overlay,
     siblingOrders: session.siblingOrders,
+    ownedAttrContainers: session.ownedAttrContainers,
   };
   const conflicts: PatchConflict[] = [];
   const appliedOps: PatchOp[] = [];
