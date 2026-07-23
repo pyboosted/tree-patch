@@ -252,7 +252,12 @@ export function ensureMutableMapValue<TKey, TValue>(
     return map.ensureMutableValue(key, cloneValue);
   }
 
-  const next = cloneValue(map.get(key));
+  const current = map.get(key);
+  if (current !== undefined || map.has(key)) {
+    return current as TValue;
+  }
+
+  const next = cloneValue(undefined);
   map.set(key, next);
   return next;
 }

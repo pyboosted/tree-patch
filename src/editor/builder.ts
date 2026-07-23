@@ -206,19 +206,50 @@ function serializeNodeSubtree<TTypes extends NodeTypeMap>(
   node: AnyTreeNode<TTypes>,
   seenIds: Set<string>,
 ): SerializedPatchNode {
-  if (seenIds.has(node.id)) {
-    throw new MalformedPatchError(`Serialized patch subtree reuses node id "${node.id}".`, {
-      details: { nodeId: node.id },
-    });
+  let root: SerializedPatchNode | undefined;
+  const stack: Array<{
+    node: AnyTreeNode<TTypes>;
+    assign: (node: SerializedPatchNode) => void;
+  }> = [{
+    node,
+    assign: (serialized) => {
+      root = serialized;
+    },
+  }];
+
+  while (stack.length > 0) {
+    const frame = stack.pop()!;
+    if (seenIds.has(frame.node.id)) {
+      throw new MalformedPatchError(
+        `Serialized patch subtree reuses node id "${frame.node.id}".`,
+        { details: { nodeId: frame.node.id } },
+      );
+    }
+
+    seenIds.add(frame.node.id);
+    const serialized: SerializedPatchNode = {
+      id: frame.node.id,
+      type: String(frame.node.type),
+      attrs: encodeRuntimeValueForPointer(
+        schemas,
+        String(frame.node.type),
+        "",
+        frame.node.attrs,
+      ),
+      children: new Array<SerializedPatchNode>(frame.node.children.length),
+    };
+    frame.assign(serialized);
+    for (let index = frame.node.children.length - 1; index >= 0; index -= 1) {
+      stack.push({
+        node: frame.node.children[index]!,
+        assign: (child) => {
+          (serialized.children as SerializedPatchNode[])[index] = child;
+        },
+      });
+    }
   }
 
-  seenIds.add(node.id);
-  return {
-    id: node.id,
-    type: String(node.type),
-    attrs: encodeRuntimeValueForPointer(schemas, String(node.type), "", node.attrs),
-    children: node.children.map((child) => serializeNodeSubtree(schemas, child, seenIds)),
-  };
+  return root!;
 }
 
 function createAnchorGuards(

@@ -60,15 +60,15 @@ interface DiffContext<TTypes extends NodeTypeMap> {
   readonly options: DiffOptions<TTypes>;
   readonly targetPatchOwned: ReadonlySet<NodeId>;
   readonly replacementRoots: ReadonlySet<NodeId>;
+  readonly replacementCoveredInBase: ReadonlySet<NodeId>;
+  readonly replacementCoveredInTarget: ReadonlySet<NodeId>;
   readonly opIds: ReturnType<typeof createOpIdFactory>;
 }
 
-interface ThresholdStats {
-  changedAttrCount: number;
-  changedChildCount: number;
-  changedNodeCount: number;
-  baseNodeCount: number;
-  targetNodeCount: number;
+interface ThresholdPrecomputation {
+  readonly baseNodeCounts: ReadonlyMap<NodeId, number>;
+  readonly targetNodeCounts: ReadonlyMap<NodeId, number>;
+  readonly changedNodeCounts: ReadonlyMap<NodeId, number>;
 }
 
 function createOpIdFactory() {
@@ -111,11 +111,16 @@ function getEffectivePatchOwnedSet<TTypes extends NodeTypeMap>(
 ): ReadonlySet<NodeId> {
   const targetState = getTreeState(target);
   const effective = new Set<NodeId>();
+  const stack: Array<{ nodeId: NodeId; inheritedPatchOwned: boolean }> = [{
+    nodeId: target.rootId,
+    inheritedPatchOwned: false,
+  }];
 
-  function visit(nodeId: NodeId, inheritedPatchOwned: boolean): void {
+  while (stack.length > 0) {
+    const { nodeId, inheritedPatchOwned } = stack.pop()!;
     const targetNode = target.nodes.get(nodeId);
     if (!targetNode) {
-      return;
+      continue;
     }
 
     const currentPatchOwned =
@@ -126,12 +131,14 @@ function getEffectivePatchOwnedSet<TTypes extends NodeTypeMap>(
       effective.add(nodeId);
     }
 
-    targetNode.childIds.forEach((childId) => {
-      visit(childId, currentPatchOwned);
-    });
+    for (let index = targetNode.childIds.length - 1; index >= 0; index -= 1) {
+      stack.push({
+        nodeId: targetNode.childIds[index]!,
+        inheritedPatchOwned: currentPatchOwned,
+      });
+    }
   }
 
-  visit(target.rootId, false);
   return effective;
 }
 
@@ -152,21 +159,25 @@ function buildPatchId<TTypes extends NodeTypeMap>(
   ])}`;
 }
 
-function isCoveredByRoots<TTypes extends NodeTypeMap>(
+function collectNodesCoveredByRoots<TTypes extends NodeTypeMap>(
   tree: IndexedTree<TTypes>,
-  nodeId: NodeId,
   roots: ReadonlySet<NodeId>,
-  includeSelf = false,
-): boolean {
-  let current = includeSelf ? nodeId : (tree.index.parentById.get(nodeId) ?? null);
-  while (current != null) {
-    if (roots.has(current)) {
-      return true;
+): ReadonlySet<NodeId> {
+  const covered = new Set<NodeId>();
+  const stack = [...roots];
+  while (stack.length > 0) {
+    const nodeId = stack.pop()!;
+    if (covered.has(nodeId)) {
+      continue;
     }
-    current = tree.index.parentById.get(current) ?? null;
+    const node = tree.nodes.get(nodeId);
+    if (!node) {
+      continue;
+    }
+    covered.add(nodeId);
+    stack.push(...node.childIds);
   }
-
-  return false;
+  return covered;
 }
 
 function findNearestViableReplacementRoot<TTypes extends NodeTypeMap>(
@@ -199,31 +210,56 @@ function collapseReplacementRoots<TTypes extends NodeTypeMap>(
   target: IndexedTree<TTypes>,
   candidates: ReadonlySet<NodeId>,
 ): ReadonlySet<NodeId> {
-  const sorted = [...candidates].sort((left, right) => {
-    const depthDiff = (target.index.depthById.get(left) ?? 0) - (target.index.depthById.get(right) ?? 0);
-    return depthDiff === 0 ? compareStrings(left, right) : depthDiff;
-  });
-
   const collapsed = new Set<NodeId>();
-  for (const nodeId of sorted) {
-    if (!isCoveredByRoots(target, nodeId, collapsed, false)) {
-      collapsed.add(nodeId);
+  const stack: Array<{ nodeId: NodeId; covered: boolean }> = [{
+    nodeId: target.rootId,
+    covered: false,
+  }];
+  while (stack.length > 0) {
+    const current = stack.pop()!;
+    const node = target.nodes.get(current.nodeId);
+    if (!node) {
+      continue;
+    }
+    const isCandidate = candidates.has(current.nodeId);
+    if (isCandidate && !current.covered) {
+      collapsed.add(current.nodeId);
+    }
+    const covered = current.covered || isCandidate;
+    for (let index = node.childIds.length - 1; index >= 0; index -= 1) {
+      stack.push({ nodeId: node.childIds[index]!, covered });
     }
   }
 
   return collapsed;
 }
 
-function getSubtreeNodeCount<TTypes extends NodeTypeMap>(
+function computeSubtreeNodeCounts<TTypes extends NodeTypeMap>(
   tree: IndexedTree<TTypes>,
-  nodeId: NodeId,
-): number {
-  const node = tree.nodes.get(nodeId);
-  if (!node) {
-    return 0;
+): ReadonlyMap<NodeId, number> {
+  const order: NodeId[] = [];
+  const stack = [tree.rootId];
+  while (stack.length > 0) {
+    const nodeId = stack.pop()!;
+    const node = tree.nodes.get(nodeId);
+    if (!node) {
+      continue;
+    }
+    order.push(nodeId);
+    stack.push(...node.childIds);
   }
 
-  return 1 + node.childIds.reduce((total, childId) => total + getSubtreeNodeCount(tree, childId), 0);
+  const counts = new Map<NodeId, number>();
+  for (let index = order.length - 1; index >= 0; index -= 1) {
+    const nodeId = order[index]!;
+    const node = tree.nodes.get(nodeId)!;
+    let count = 1;
+    for (const childId of node.childIds) {
+      count += counts.get(childId) ?? 0;
+    }
+    counts.set(nodeId, count);
+  }
+  return counts;
 }
 
 function countAttrChanges<TTypes extends NodeTypeMap>(
@@ -233,79 +269,125 @@ function countAttrChanges<TTypes extends NodeTypeMap>(
   targetValue: unknown,
   pointer: JsonPointer,
 ): number {
-  if (runtimeValuesEqualForSchemas(schemas, nodeType, pointer, baseValue, targetValue)) {
-    return 0;
-  }
-
-  if (
-    isAtomicForSchemas(schemas, nodeType, pointer) ||
-    getValueAdapterForSchemas(schemas, nodeType, pointer) ||
-    Array.isArray(baseValue) ||
-    Array.isArray(targetValue) ||
-    !isPlainObject(baseValue) ||
-    !isPlainObject(targetValue)
-  ) {
-    return 1;
-  }
-
-  const keys = [...new Set([...Object.keys(baseValue), ...Object.keys(targetValue)])].sort();
-  return keys.reduce((total, key) => {
-    const nextPointer = joinJsonPointer(pointer, key);
-    const hasBase = Object.hasOwn(baseValue, key);
-    const hasTarget = Object.hasOwn(targetValue, key);
-
-    if (!hasBase || !hasTarget) {
-      return total + 1;
+  let total = 0;
+  const stack: Array<{
+    baseValue: unknown;
+    targetValue: unknown;
+    pointer: JsonPointer;
+  }> = [{ baseValue, targetValue, pointer }];
+  while (stack.length > 0) {
+    const current = stack.pop()!;
+    if (
+      runtimeValuesEqualForSchemas(
+        schemas,
+        nodeType,
+        current.pointer,
+        current.baseValue,
+        current.targetValue,
+      )
+    ) {
+      continue;
     }
-
-    return total + countAttrChanges(
-      schemas,
-      nodeType,
-      baseValue[key],
-      targetValue[key],
-      nextPointer,
-    );
-  }, 0);
-}
-
-function collectChangedNodesWithinSubtree<TTypes extends NodeTypeMap>(
-  base: IndexedTree<TTypes>,
-  target: IndexedTree<TTypes>,
-  nodeId: NodeId,
-): number {
-  const baseNode = base.nodes.get(nodeId);
-  const targetNode = target.nodes.get(nodeId);
-  if (!baseNode || !targetNode) {
-    return 1;
-  }
-  if (getSubtreeHash(base, nodeId) === getSubtreeHash(target, nodeId)) {
-    return 0;
-  }
-
-  let changed = 0;
-  if (
-    baseNode.type !== targetNode.type ||
-    baseNode.childIds.length !== targetNode.childIds.length ||
-    baseNode.childIds.some((childId, index) => childId !== targetNode.childIds[index])
-  ) {
-    changed += 1;
-  }
-
-  const baseChildIdSet = new Set(baseNode.childIds);
-  const targetChildIdSet = new Set(targetNode.childIds);
-  const childIds = new Set([...baseNode.childIds, ...targetNode.childIds]);
-  for (const childId of childIds) {
-    if (baseChildIdSet.has(childId) && targetChildIdSet.has(childId)) {
-      changed += collectChangedNodesWithinSubtree(base, target, childId);
+    if (
+      isAtomicForSchemas(schemas, nodeType, current.pointer) ||
+      getValueAdapterForSchemas(schemas, nodeType, current.pointer) ||
+      Array.isArray(current.baseValue) ||
+      Array.isArray(current.targetValue) ||
+      !isPlainObject(current.baseValue) ||
+      !isPlainObject(current.targetValue)
+    ) {
+      total += 1;
       continue;
     }
 
-    if (base.nodes.has(childId) || target.nodes.has(childId)) {
-      changed += 1;
+    const keys = [...new Set([
+      ...Object.keys(current.baseValue),
+      ...Object.keys(current.targetValue),
+    ])].sort();
+    for (const key of keys) {
+      if (
+        !Object.hasOwn(current.baseValue, key) ||
+        !Object.hasOwn(current.targetValue, key)
+      ) {
+        total += 1;
+      } else {
+        stack.push({
+          baseValue: current.baseValue[key],
+          targetValue: current.targetValue[key],
+          pointer: joinJsonPointer(current.pointer, key),
+        });
+      }
     }
   }
+  return total;
+}
 
-  return changed;
+function computeChangedNodeCounts<TTypes extends NodeTypeMap>(
+  base: IndexedTree<TTypes>,
+  target: IndexedTree<TTypes>,
+): ReadonlyMap<NodeId, number> {
+  const order: NodeId[] = [];
+  const stack = [target.rootId];
+  while (stack.length > 0) {
+    const nodeId = stack.pop()!;
+    const node = target.nodes.get(nodeId);
+    if (!node) {
+      continue;
+    }
+    order.push(nodeId);
+    stack.push(...node.childIds);
+  }
+
+  const changedCounts = new Map<NodeId, number>();
+  for (let index = order.length - 1; index >= 0; index -= 1) {
+    const nodeId = order[index]!;
+    const baseNode = base.nodes.get(nodeId);
+    const targetNode = target.nodes.get(nodeId)!;
+    if (!baseNode) {
+      changedCounts.set(nodeId, 1);
+      continue;
+    }
+    if (getSubtreeHash(base, nodeId) === getSubtreeHash(target, nodeId)) {
+      changedCounts.set(nodeId, 0);
+      continue;
+    }
+
+    let changed =
+      getNodeHash(base, nodeId) !== getNodeHash(target, nodeId) ||
+      !hasSameNodeOrder(baseNode.childIds, targetNode.childIds)
+        ? 1
+        : 0;
+    const baseChildIds = new Set(baseNode.childIds);
+    const targetChildIds = new Set(targetNode.childIds);
+    for (const childId of new Set([
+      ...baseNode.childIds,
+      ...targetNode.childIds,
+    ])) {
+      changed +=
+        baseChildIds.has(childId) && targetChildIds.has(childId)
+          ? changedCounts.get(childId) ?? 0
+          : 1;
+    }
+    changedCounts.set(nodeId, changed);
+  }
+
+  return changedCounts;
+}
+
+function precomputeThresholds<TTypes extends NodeTypeMap>(
+  base: IndexedTree<TTypes>,
+  target: IndexedTree<TTypes>,
+  options: DiffOptions<TTypes>,
+): ThresholdPrecomputation | undefined {
+  if (options.replaceSubtreeWhen?.subtreeChangeRatioGte === undefined) {
+    return undefined;
+  }
+
+  return {
+    baseNodeCounts: computeSubtreeNodeCounts(base),
+    targetNodeCounts: computeSubtreeNodeCounts(target),
+    changedNodeCounts: computeChangedNodeCounts(base, target),
+  };
 }
 
 function shouldReplaceSubtreeByThresholds<TTypes extends NodeTypeMap>(
@@ -314,6 +396,7 @@ function shouldReplaceSubtreeByThresholds<TTypes extends NodeTypeMap>(
   schemas: CompiledSchemas<TTypes>,
   nodeId: NodeId,
   options: DiffOptions<TTypes>,
+  precomputed: ThresholdPrecomputation | undefined,
 ): boolean {
   const thresholds = options.replaceSubtreeWhen;
   if (!thresholds) {
@@ -326,35 +409,51 @@ function shouldReplaceSubtreeByThresholds<TTypes extends NodeTypeMap>(
     return false;
   }
 
-  const baseChildPositions = new Map(baseNode.childIds.map((childId, index) => [childId, index]));
-  const targetChildPositions = new Map(
-    targetNode.childIds.map((childId, index) => [childId, index]),
-  );
+  if (
+    thresholds.changedAttrCountGte !== undefined &&
+    countAttrChanges(
+      schemas,
+      String(baseNode.type),
+      baseNode.attrs,
+      targetNode.attrs,
+      "",
+    ) >= thresholds.changedAttrCountGte
+  ) {
+    return true;
+  }
 
-  const stats: ThresholdStats = {
-    changedAttrCount: countAttrChanges(schemas, String(baseNode.type), baseNode.attrs, targetNode.attrs, ""),
-    changedChildCount: [...new Set([...baseNode.childIds, ...targetNode.childIds])].filter((childId) => {
+  if (thresholds.changedChildCountGte !== undefined) {
+    const baseChildPositions = new Map(
+      baseNode.childIds.map((childId, index) => [childId, index]),
+    );
+    const targetChildPositions = new Map(
+      targetNode.childIds.map((childId, index) => [childId, index]),
+    );
+    const changedChildCount = [...new Set([
+      ...baseNode.childIds,
+      ...targetNode.childIds,
+    ])].filter((childId) => {
       const baseIndex = baseChildPositions.get(childId);
       const targetIndex = targetChildPositions.get(childId);
       return baseIndex === undefined || targetIndex === undefined || baseIndex !== targetIndex;
-    }).length,
-    changedNodeCount: collectChangedNodesWithinSubtree(base, target, nodeId),
-    baseNodeCount: getSubtreeNodeCount(base, nodeId),
-    targetNodeCount: getSubtreeNodeCount(target, nodeId),
-  };
+    }).length;
+    if (changedChildCount >= thresholds.changedChildCountGte) {
+      return true;
+    }
+  }
 
-  const subtreeChangeRatio =
-    stats.changedNodeCount /
-    Math.max(stats.baseNodeCount, stats.targetNodeCount, 1);
+  if (thresholds.subtreeChangeRatioGte !== undefined && precomputed) {
+    const subtreeChangeRatio =
+      (precomputed.changedNodeCounts.get(nodeId) ?? 0) /
+      Math.max(
+        precomputed.baseNodeCounts.get(nodeId) ?? 0,
+        precomputed.targetNodeCounts.get(nodeId) ?? 0,
+        1,
+      );
+    return subtreeChangeRatio >= thresholds.subtreeChangeRatioGte;
+  }
 
-  return (
-    (thresholds.changedAttrCountGte !== undefined &&
-      stats.changedAttrCount >= thresholds.changedAttrCountGte) ||
-    (thresholds.changedChildCountGte !== undefined &&
-      stats.changedChildCount >= thresholds.changedChildCountGte) ||
-    (thresholds.subtreeChangeRatioGte !== undefined &&
-      subtreeChangeRatio >= thresholds.subtreeChangeRatioGte)
-  );
+  return false;
 }
 
 function isEffectivelyHidden<TTypes extends NodeTypeMap>(
@@ -403,7 +502,21 @@ function serializeReplacementSubtree<TTypes extends NodeTypeMap>(
     return !baseDescendants.has(childId) || context.baseState.patchOwned.has(childId);
   }
 
-  function visit(currentId: NodeId, isRoot: boolean): SerializedPatchNode {
+  let root: SerializedPatchNode | undefined;
+  const stack: Array<{
+    currentId: NodeId;
+    isRoot: boolean;
+    assign: (node: SerializedPatchNode) => void;
+  }> = [{
+    currentId: nodeId,
+    isRoot: true,
+    assign: (node) => {
+      root = node;
+    },
+  }];
+  while (stack.length > 0) {
+    const frame = stack.pop()!;
+    const currentId = frame.currentId;
     const current = context.target.nodes.get(currentId);
     if (!current) {
       throw new UnsupportedTransformError(`Replacement subtree target node "${currentId}" is missing.`, {
@@ -411,7 +524,11 @@ function serializeReplacementSubtree<TTypes extends NodeTypeMap>(
       });
     }
 
-    if (!isRoot && baseDescendants.has(currentId) && !context.baseState.patchOwned.has(currentId)) {
+    if (
+      !frame.isRoot &&
+      baseDescendants.has(currentId) &&
+      !context.baseState.patchOwned.has(currentId)
+    ) {
       throw new UnsupportedTransformError(
         `Replacement subtree for "${nodeId}" would reuse source-backed descendant id "${currentId}".`,
         {
@@ -420,38 +537,79 @@ function serializeReplacementSubtree<TTypes extends NodeTypeMap>(
       );
     }
 
-    return {
+    const childIds = current.childIds.filter((childId) =>
+      shouldIncludeChildDescendant(childId)
+    );
+    const serialized: SerializedPatchNode = {
       id: current.id,
       type: String(current.type),
       attrs: encodeRuntimeValueForPointer(context.schemas, String(current.type), "", current.attrs),
-      children: current.childIds
-        .filter((childId) => shouldIncludeChildDescendant(childId))
-        .map((childId) => visit(childId, false)),
+      children: new Array<SerializedPatchNode>(childIds.length),
     };
+    frame.assign(serialized);
+    for (let index = childIds.length - 1; index >= 0; index -= 1) {
+      stack.push({
+        currentId: childIds[index]!,
+        isRoot: false,
+        assign: (child) => {
+          (serialized.children as SerializedPatchNode[])[index] = child;
+        },
+      });
+    }
   }
 
-  return visit(nodeId, true);
+  return root!;
 }
 
 function serializeInsertedSubtree<TTypes extends NodeTypeMap>(
   context: DiffContext<TTypes>,
   nodeId: NodeId,
 ): SerializedPatchNode {
-  const targetNode = context.target.nodes.get(nodeId);
-  if (!targetNode) {
-    throw new UnsupportedTransformError(`Cannot serialize missing target node "${nodeId}" for insert.`, {
-      details: { nodeId },
-    });
+  let root: SerializedPatchNode | undefined;
+  const stack: Array<{
+    nodeId: NodeId;
+    assign: (node: SerializedPatchNode) => void;
+  }> = [{
+    nodeId,
+    assign: (node) => {
+      root = node;
+    },
+  }];
+  while (stack.length > 0) {
+    const frame = stack.pop()!;
+    const targetNode = context.target.nodes.get(frame.nodeId);
+    if (!targetNode) {
+      throw new UnsupportedTransformError(
+        `Cannot serialize missing target node "${frame.nodeId}" for insert.`,
+        { details: { nodeId: frame.nodeId } },
+      );
+    }
+    const childIds = targetNode.childIds.filter(
+      (childId) => !context.base.nodes.has(childId),
+    );
+    const serialized: SerializedPatchNode = {
+      id: targetNode.id,
+      type: String(targetNode.type),
+      attrs: encodeRuntimeValueForPointer(
+        context.schemas,
+        String(targetNode.type),
+        "",
+        targetNode.attrs,
+      ),
+      children: new Array<SerializedPatchNode>(childIds.length),
+    };
+    frame.assign(serialized);
+    for (let index = childIds.length - 1; index >= 0; index -= 1) {
+      stack.push({
+        nodeId: childIds[index]!,
+        assign: (child) => {
+          (serialized.children as SerializedPatchNode[])[index] = child;
+        },
+      });
+    }
   }
 
-  return {
-    id: targetNode.id,
-    type: String(targetNode.type),
-    attrs: encodeRuntimeValueForPointer(context.schemas, String(targetNode.type), "", targetNode.attrs),
-    children: targetNode.childIds
-      .filter((childId) => !context.base.nodes.has(childId))
-      .map((childId) => serializeInsertedSubtree(context, childId)),
-  };
+  return root!;
 }
 
 function makePositionFromTarget<TTypes extends NodeTypeMap>(
@@ -741,6 +899,7 @@ function collectReplacementRoots<TTypes extends NodeTypeMap>(
 ): ReadonlySet<NodeId> {
   const baseState = getTreeState(base);
   const candidates = new Set<NodeId>();
+  const precomputedThresholds = precomputeThresholds(base, target, options);
 
   for (const [nodeId, baseNode] of base.nodes) {
     const targetNode = target.nodes.get(nodeId);
@@ -789,7 +948,16 @@ function collectReplacementRoots<TTypes extends NodeTypeMap>(
       continue;
     }
 
-    if (shouldReplaceSubtreeByThresholds(base, target, schemas, nodeId, options)) {
+    if (
+      shouldReplaceSubtreeByThresholds(
+        base,
+        target,
+        schemas,
+        nodeId,
+        options,
+        precomputedThresholds,
+      )
+    ) {
       candidates.add(nodeId);
     }
   }
@@ -809,7 +977,6 @@ function buildPlanningState<TTypes extends NodeTypeMap>(
         [...node.childIds].filter((childId) => target.nodes.has(childId)),
       ]),
     ),
-    presentIds: new Set([...base.nodes.keys()].filter((nodeId) => target.nodes.has(nodeId))),
   };
 }
 
@@ -836,46 +1003,28 @@ function insertPlanningSubtree<TTypes extends NodeTypeMap>(
   siblings.splice(Math.max(0, insertIndex), 0, nodeId);
   planning.childIdsByParent.set(parentId, siblings);
 
-  planning.presentIds.add(nodeId);
-  planning.parentById.set(nodeId, parentId);
-  planning.childIdsByParent.set(nodeId, [...node.childIds.filter((childId) => !base.nodes.has(childId))]);
-
-  node.childIds
-    .filter((childId) => !base.nodes.has(childId))
-    .forEach((childId) => {
-      insertPlanningSubtree(planning, target, base, childId, nodeId);
-    });
-}
-
-function movePlanningNode<TTypes extends NodeTypeMap>(
-  planning: ReturnType<typeof buildPlanningState<TTypes>>,
-  nodeId: NodeId,
-  newParentId: NodeId,
-  position: ChildPosition | undefined,
-): void {
-  const oldParentId = planning.parentById.get(nodeId);
-  if (oldParentId != null) {
-    const oldSiblings = planning.childIdsByParent.get(oldParentId) ?? [];
-    const oldIndex = oldSiblings.indexOf(nodeId);
-    if (oldIndex >= 0) {
-      oldSiblings.splice(oldIndex, 1);
+  const stack: Array<{ nodeId: NodeId; parentId: NodeId }> = [{
+    nodeId,
+    parentId,
+  }];
+  while (stack.length > 0) {
+    const current = stack.pop()!;
+    const currentNode = target.nodes.get(current.nodeId);
+    if (!currentNode) {
+      continue;
     }
-    planning.childIdsByParent.set(oldParentId, oldSiblings);
+    const insertedChildren = currentNode.childIds.filter(
+      (childId) => !base.nodes.has(childId),
+    );
+    planning.parentById.set(current.nodeId, current.parentId);
+    planning.childIdsByParent.set(current.nodeId, insertedChildren);
+    for (let index = insertedChildren.length - 1; index >= 0; index -= 1) {
+      stack.push({
+        nodeId: insertedChildren[index]!,
+        parentId: current.nodeId,
+      });
+    }
   }
-
-  const siblings = planning.childIdsByParent.get(newParentId) ?? [];
-  let insertIndex = siblings.length;
-  if (position && "atStart" in position) {
-    insertIndex = 0;
-  } else if (position && "afterId" in position) {
-    insertIndex = siblings.indexOf(position.afterId) + 1;
-  } else if (position && "beforeId" in position) {
-    insertIndex = siblings.indexOf(position.beforeId);
-  }
-
-  siblings.splice(Math.max(0, insertIndex), 0, nodeId);
-  planning.childIdsByParent.set(newParentId, siblings);
-  planning.parentById.set(nodeId, newParentId);
 }
 
 function collectInsertOps<TTypes extends NodeTypeMap>(
@@ -883,45 +1032,50 @@ function collectInsertOps<TTypes extends NodeTypeMap>(
   planning: ReturnType<typeof buildPlanningState<TTypes>>,
 ): InsertNodeOp[] {
   const inserts: InsertNodeOp[] = [];
-
-  function visit(nodeId: NodeId): void {
+  const stack: Array<{ nodeId: NodeId; childIndex: number }> = [{
+    nodeId: context.target.rootId,
+    childIndex: 0,
+  }];
+  while (stack.length > 0) {
+    const frame = stack.pop()!;
+    const nodeId = frame.nodeId;
     if (context.replacementRoots.has(nodeId)) {
-      return;
+      continue;
     }
 
     const targetNode = context.target.nodes.get(nodeId);
     if (!targetNode) {
-      return;
+      continue;
+    }
+    if (frame.childIndex >= targetNode.childIds.length) {
+      continue;
     }
 
-    for (const childId of targetNode.childIds) {
-      if (context.replacementRoots.has(childId)) {
-        continue;
-      }
-
-      if (!context.base.nodes.has(childId)) {
-        const parentId = nodeId;
-        const position = makePositionFromTarget(context.target, childId);
-        const op: InsertNodeOp = {
-          kind: "insertNode",
-          opId: context.opIds("insert", childId),
-          parentId,
-          node: serializeInsertedSubtree(context, childId),
-          guards: guardsForAnchor(parentId, position),
-        };
-        if (position !== undefined) {
-          op.position = position;
-        }
-        inserts.push(op);
-        insertPlanningSubtree(planning, context.target, context.base, childId, parentId);
-        continue;
-      }
-
-      visit(childId);
+    stack.push({ nodeId, childIndex: frame.childIndex + 1 });
+    const childId = targetNode.childIds[frame.childIndex]!;
+    if (context.replacementRoots.has(childId)) {
+      continue;
     }
+    if (!context.base.nodes.has(childId)) {
+      const parentId = nodeId;
+      const position = makePositionFromTarget(context.target, childId);
+      const op: InsertNodeOp = {
+        kind: "insertNode",
+        opId: context.opIds("insert", childId),
+        parentId,
+        node: serializeInsertedSubtree(context, childId),
+        guards: guardsForAnchor(parentId, position),
+      };
+      if (position !== undefined) {
+        op.position = position;
+      }
+      inserts.push(op);
+      insertPlanningSubtree(planning, context.target, context.base, childId, parentId);
+      continue;
+    }
+    stack.push({ nodeId: childId, childIndex: 0 });
   }
 
-  visit(context.target.rootId);
   return inserts;
 }
 
@@ -930,73 +1084,185 @@ function collectMoveOps<TTypes extends NodeTypeMap>(
   planning: ReturnType<typeof buildPlanningState<TTypes>>,
 ): MoveNodeOp[] {
   const moves: MoveNodeOp[] = [];
+  const previousById = new Map<NodeId, NodeId | null>();
+  const nextById = new Map<NodeId, NodeId | null>();
+  const firstChildByParent = new Map<NodeId, NodeId | null>();
+  const lastChildByParent = new Map<NodeId, NodeId | null>();
+  const mutatedParents = new Set<NodeId>();
 
-  function visit(parentId: NodeId): void {
+  for (const [parentId, childIds] of planning.childIdsByParent) {
+    firstChildByParent.set(parentId, childIds[0] ?? null);
+    lastChildByParent.set(parentId, childIds.at(-1) ?? null);
+    for (let index = 0; index < childIds.length; index += 1) {
+      const childId = childIds[index]!;
+      previousById.set(childId, childIds[index - 1] ?? null);
+      nextById.set(childId, childIds[index + 1] ?? null);
+    }
+    const sourceChildIds = context.base.nodes.get(parentId)?.childIds ?? [];
+    if (!hasSameNodeOrder(sourceChildIds, childIds)) {
+      mutatedParents.add(parentId);
+    }
+  }
+
+  function orderMatches(parentId: NodeId, targetChildIds: readonly NodeId[]): boolean {
+    let current = firstChildByParent.get(parentId) ?? null;
+    for (const targetChildId of targetChildIds) {
+      if (current !== targetChildId) {
+        return false;
+      }
+      current = nextById.get(current) ?? null;
+    }
+    return current === null;
+  }
+
+  function movePlanningNodeLinked(
+    nodeId: NodeId,
+    oldParentId: NodeId | null,
+    newParentId: NodeId,
+    previousId: NodeId | undefined,
+  ): void {
+    if (oldParentId != null) {
+      const previous = previousById.get(nodeId) ?? null;
+      const next = nextById.get(nodeId) ?? null;
+      if (previous === null) {
+        firstChildByParent.set(oldParentId, next);
+      } else {
+        nextById.set(previous, next);
+      }
+      if (next === null) {
+        lastChildByParent.set(oldParentId, previous);
+      } else {
+        previousById.set(next, previous);
+      }
+      mutatedParents.add(oldParentId);
+    }
+
+    if (previousId === undefined) {
+      const first = firstChildByParent.get(newParentId) ?? null;
+      previousById.set(nodeId, null);
+      nextById.set(nodeId, first);
+      firstChildByParent.set(newParentId, nodeId);
+      if (first === null) {
+        lastChildByParent.set(newParentId, nodeId);
+      } else {
+        previousById.set(first, nodeId);
+      }
+    } else {
+      const next = nextById.get(previousId) ?? null;
+      previousById.set(nodeId, previousId);
+      nextById.set(nodeId, next);
+      nextById.set(previousId, nodeId);
+      if (next === null) {
+        lastChildByParent.set(newParentId, nodeId);
+      } else {
+        previousById.set(next, nodeId);
+      }
+    }
+    planning.parentById.set(nodeId, newParentId);
+    mutatedParents.add(newParentId);
+  }
+
+  const stack: Array<{ parentId: NodeId; childIndex: number }> = [{
+    parentId: context.target.rootId,
+    childIndex: 0,
+  }];
+
+  while (stack.length > 0) {
+    const frame = stack.pop()!;
+    const parentId = frame.parentId;
     if (context.replacementRoots.has(parentId)) {
-      return;
+      continue;
     }
 
     const parent = context.target.nodes.get(parentId);
     if (!parent) {
-      return;
+      continue;
     }
 
-    for (let index = 0; index < parent.childIds.length; index += 1) {
-      const nodeId = parent.childIds[index]!;
-      if (!context.base.nodes.has(nodeId)) {
-        if (context.target.nodes.has(nodeId)) {
-          visit(nodeId);
+    if (
+      frame.childIndex === 0 &&
+      orderMatches(parentId, parent.childIds)
+    ) {
+      for (let index = parent.childIds.length - 1; index >= 0; index -= 1) {
+        const childId = parent.childIds[index]!;
+        if (!context.replacementRoots.has(childId)) {
+          stack.push({ parentId: childId, childIndex: 0 });
         }
-        continue;
       }
+      continue;
+    }
+    if (frame.childIndex >= parent.childIds.length) {
+      continue;
+    }
 
-      const targetParentId = parentId;
-      const targetPreviousSibling = index > 0 ? parent.childIds[index - 1]! : undefined;
-      const currentParentId = planning.parentById.get(nodeId) ?? null;
-      const currentSiblings = currentParentId != null ? planning.childIdsByParent.get(currentParentId) ?? [] : [];
-      const currentIndex = currentSiblings.indexOf(nodeId);
-      const sourceSiblings =
-        currentParentId != null
-          ? context.base.nodes.get(currentParentId)?.childIds
-          : undefined;
-      const currentPositionGuards =
-        sourceSiblings && hasSameNodeOrder(currentSiblings, sourceSiblings)
-          ? guardsForCurrentPosition(nodeId, currentSiblings, currentIndex)
-          : [];
-      const alreadyCorrect =
-        currentParentId === targetParentId &&
-        ((targetPreviousSibling === undefined && currentIndex === 0) ||
-          (targetPreviousSibling !== undefined && currentIndex > 0 && currentSiblings[currentIndex - 1] === targetPreviousSibling));
-
-      if (!alreadyCorrect) {
-        const position: ChildPosition =
-          targetPreviousSibling === undefined ? { atStart: true } : { afterId: targetPreviousSibling };
-        moves.push({
-          kind: "moveNode",
-          opId: context.opIds("move", nodeId),
-          nodeId,
-          newParentId: targetParentId,
-          position,
-          guards: [
-            { kind: "nodeExists", nodeId },
-            { kind: "nodeExists", nodeId: targetParentId },
-            { kind: "parentIs", nodeId, parentId: context.base.index.parentById.get(nodeId) ?? null },
-            ...currentPositionGuards,
-            ...guardsForAnchor(targetParentId, position),
-          ],
-        });
-        movePlanningNode(planning, nodeId, targetParentId, position);
+    stack.push({ parentId, childIndex: frame.childIndex + 1 });
+    const index = frame.childIndex;
+    const nodeId = parent.childIds[index]!;
+    if (!context.base.nodes.has(nodeId)) {
+      if (context.target.nodes.has(nodeId)) {
+        stack.push({ parentId: nodeId, childIndex: 0 });
       }
+      continue;
+    }
 
-      if (context.replacementRoots.has(nodeId)) {
-        continue;
-      }
+    const targetParentId = parentId;
+    const targetPreviousSibling = index > 0 ? parent.childIds[index - 1]! : undefined;
+    const currentParentId = planning.parentById.get(nodeId) ?? null;
+    const currentPreviousSibling = previousById.get(nodeId) ?? null;
+    const sourceSiblings =
+      currentParentId != null
+        ? context.base.nodes.get(currentParentId)?.childIds
+        : undefined;
+    const currentPositionGuards =
+      sourceSiblings &&
+      currentParentId != null &&
+      !mutatedParents.has(currentParentId)
+        ? guardsForCurrentPosition(
+            nodeId,
+            sourceSiblings,
+            context.base.index.positionById.get(nodeId) ?? -1,
+          )
+        : [];
+    const alreadyCorrect =
+      currentParentId === targetParentId &&
+      currentPreviousSibling === (targetPreviousSibling ?? null);
 
-      visit(nodeId);
+    if (!alreadyCorrect) {
+      const position: ChildPosition =
+        targetPreviousSibling === undefined
+          ? { atStart: true }
+          : { afterId: targetPreviousSibling };
+      moves.push({
+        kind: "moveNode",
+        opId: context.opIds("move", nodeId),
+        nodeId,
+        newParentId: targetParentId,
+        position,
+        guards: [
+          { kind: "nodeExists", nodeId },
+          { kind: "nodeExists", nodeId: targetParentId },
+          {
+            kind: "parentIs",
+            nodeId,
+            parentId: context.base.index.parentById.get(nodeId) ?? null,
+          },
+          ...currentPositionGuards,
+          ...guardsForAnchor(targetParentId, position),
+        ],
+      });
+      movePlanningNodeLinked(
+        nodeId,
+        currentParentId,
+        targetParentId,
+        targetPreviousSibling,
+      );
+    }
+
+    if (!context.replacementRoots.has(nodeId)) {
+      stack.push({ parentId: nodeId, childIndex: 0 });
     }
   }
 
-  visit(context.target.rootId);
   return moves;
 }
 
@@ -1010,7 +1276,7 @@ function collectAttrOps<TTypes extends NodeTypeMap>(
     const targetNode = context.target.nodes.get(nodeId);
     if (
       !targetNode ||
-      isCoveredByRoots(context.target, nodeId, context.replacementRoots, true)
+      context.replacementCoveredInTarget.has(nodeId)
     ) {
       continue;
     }
@@ -1064,7 +1330,7 @@ function collectReplacementInsertOps<TTypes extends NodeTypeMap>(
     return (
       nodeId !== replacementRootId &&
       context.base.nodes.has(nodeId) &&
-      isCoveredByRoots(context.base, nodeId, new Set([replacementRootId]), false) &&
+      context.replacementCoveredInBase.has(nodeId) &&
       !context.baseState.patchOwned.has(nodeId)
     );
   }
@@ -1143,7 +1409,7 @@ function collectVisibilityOps<TTypes extends NodeTypeMap>(
     const baseHasNode = context.base.nodes.has(nodeId);
     const targetExplicitlyHidden = targetHidden.has(nodeId);
     const baseExplicitlyHidden = baseHidden.has(nodeId);
-    const coveredByReplacement = isCoveredByRoots(context.target, nodeId, context.replacementRoots, true);
+    const coveredByReplacement = context.replacementCoveredInTarget.has(nodeId);
 
     if (targetExplicitlyHidden && !baseExplicitlyHidden) {
       ops.push({
@@ -1175,7 +1441,7 @@ function collectVisibilityOps<TTypes extends NodeTypeMap>(
       if (nodeId === context.base.rootId || context.baseState.patchOwned.has(nodeId) || context.target.nodes.has(nodeId)) {
         return false;
       }
-      if (isCoveredByRoots(context.base, nodeId, context.replacementRoots, true)) {
+      if (context.replacementCoveredInBase.has(nodeId)) {
         return false;
       }
       const parentId = context.base.index.parentById.get(nodeId);
@@ -1220,7 +1486,7 @@ function collectRemoveOps<TTypes extends NodeTypeMap>(context: DiffContext<TType
       if (nodeId === context.base.rootId || !context.baseState.patchOwned.has(nodeId) || context.target.nodes.has(nodeId)) {
         return false;
       }
-      if (isCoveredByRoots(context.base, nodeId, context.replacementRoots, true)) {
+      if (context.replacementCoveredInBase.has(nodeId)) {
         return false;
       }
 
@@ -1275,6 +1541,8 @@ export function diffTrees<TTypes extends NodeTypeMap>(
 
   const targetPatchOwned = getEffectivePatchOwnedSet(base, target);
   const replacementRoots = collectReplacementRoots(base, target, options, schemas, targetPatchOwned);
+  const replacementCoveredInBase = collectNodesCoveredByRoots(base, replacementRoots);
+  const replacementCoveredInTarget = collectNodesCoveredByRoots(target, replacementRoots);
   const context: DiffContext<TTypes> = {
     base,
     target,
@@ -1284,6 +1552,8 @@ export function diffTrees<TTypes extends NodeTypeMap>(
     options,
     targetPatchOwned,
     replacementRoots,
+    replacementCoveredInBase,
+    replacementCoveredInTarget,
     opIds: createOpIdFactory(),
   };
 

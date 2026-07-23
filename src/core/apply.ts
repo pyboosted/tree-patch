@@ -73,6 +73,15 @@ import {
 
 interface ExecutionContext<TTypes extends NodeTypeMap> {
   readonly overlay: OverlayState<TTypes>;
+  readonly siblingOrders: Map<NodeId, MutableSiblingOrder>;
+}
+
+interface MutableSiblingOrder {
+  first: NodeId | null;
+  last: NodeId | null;
+  readonly previous: Map<NodeId, NodeId | null>;
+  readonly next: Map<NodeId, NodeId | null>;
+  dirty: boolean;
 }
 
 type OperationResult = { ok: true } | { ok: false; conflict: PatchConflict };
@@ -80,6 +89,7 @@ type OperationResult = { ok: true } | { ok: false; conflict: PatchConflict };
 export interface PatchExecutionSession<TTypes extends NodeTypeMap> {
   readonly overlay: OverlayState<TTypes>;
   readonly tree: IndexedTree<TTypes>;
+  readonly siblingOrders: Map<NodeId, MutableSiblingOrder>;
 }
 
 export interface ExecutePatchInternalResult<TTypes extends NodeTypeMap> {
@@ -118,6 +128,62 @@ function toConflict(
   }
 
   return conflict;
+}
+
+function getSiblingOrder<TTypes extends NodeTypeMap>(
+  context: ExecutionContext<TTypes>,
+  parentId: NodeId,
+): MutableSiblingOrder {
+  const cached = context.siblingOrders.get(parentId);
+  if (cached) {
+    return cached;
+  }
+
+  const childIds = getParentChildIds(context.overlay, parentId);
+  const previous = new Map<NodeId, NodeId | null>();
+  const next = new Map<NodeId, NodeId | null>();
+  for (let index = 0; index < childIds.length; index += 1) {
+    const childId = childIds[index]!;
+    previous.set(childId, childIds[index - 1] ?? null);
+    next.set(childId, childIds[index + 1] ?? null);
+  }
+  const order: MutableSiblingOrder = {
+    first: childIds[0] ?? null,
+    last: childIds.at(-1) ?? null,
+    previous,
+    next,
+    dirty: false,
+  };
+  context.siblingOrders.set(parentId, order);
+  return order;
+}
+
+function flushSiblingOrders<TTypes extends NodeTypeMap>(
+  context: ExecutionContext<TTypes>,
+): void {
+  for (const [parentId, order] of context.siblingOrders) {
+    if (!order.dirty) {
+      continue;
+    }
+    const childIds: NodeId[] = [];
+    let current = order.first;
+    while (current !== null) {
+      childIds.push(current);
+      current = order.next.get(current) ?? null;
+    }
+    setParentChildIds(context.overlay, parentId, childIds);
+    childIds.forEach((childId, index) => {
+      context.overlay.index.positionById.set(childId, index);
+    });
+    order.dirty = false;
+  }
+}
+
+function clearSiblingOrders<TTypes extends NodeTypeMap>(
+  context: ExecutionContext<TTypes>,
+): void {
+  flushSiblingOrders(context);
+  context.siblingOrders.clear();
 }
 
 function computeRevisionStatus(
@@ -636,8 +702,7 @@ function evaluateGuard<TTypes extends NodeTypeMap>(
         };
       }
 
-      const siblings = getParentChildIds(overlay, parentId);
-      if (siblings[0] !== guard.nodeId) {
+      if (getSiblingOrder(context, parentId).first !== guard.nodeId) {
         return {
           ok: false,
           conflict: toConflict(
@@ -664,8 +729,7 @@ function evaluateGuard<TTypes extends NodeTypeMap>(
         };
       }
 
-      const siblings = getParentChildIds(overlay, parentId);
-      if (siblings[siblings.length - 1] !== guard.nodeId) {
+      if (getSiblingOrder(context, parentId).last !== guard.nodeId) {
         return {
           ok: false,
           conflict: toConflict(
@@ -699,9 +763,10 @@ function evaluateGuard<TTypes extends NodeTypeMap>(
         };
       }
 
-      const siblings = getParentChildIds(overlay, actualParentId);
-      const index = siblings.indexOf(guard.nodeId);
-      if (index <= 0 || siblings[index - 1] !== guard.afterId) {
+      if (
+        getSiblingOrder(context, actualParentId).previous.get(guard.nodeId) !==
+        guard.afterId
+      ) {
         return {
           ok: false,
           conflict: toConflict(
@@ -734,9 +799,10 @@ function evaluateGuard<TTypes extends NodeTypeMap>(
         };
       }
 
-      const siblings = getParentChildIds(overlay, actualParentId);
-      const index = siblings.indexOf(guard.nodeId);
-      if (index === -1 || index + 1 >= siblings.length || siblings[index + 1] !== guard.beforeId) {
+      if (
+        getSiblingOrder(context, actualParentId).next.get(guard.nodeId) !==
+        guard.beforeId
+      ) {
         return {
           ok: false,
           conflict: toConflict(
@@ -1154,49 +1220,101 @@ function applyMoveNode<TTypes extends NodeTypeMap>(
     };
   }
 
-  const currentSiblingIds = getParentChildIds(overlay, currentParentId);
-  const destinationSiblings =
-    currentParentId === op.newParentId
-      ? currentSiblingIds.filter((childId) => childId !== op.nodeId)
-      : [...getParentChildIds(overlay, op.newParentId)];
-  const resolvedIndex = resolvePositionAgainstChildIds(
-    destinationSiblings,
-    position,
-    op.opId,
-    op.newParentId,
-    toConflict,
-  );
-  if (!resolvedIndex.ok) {
-    return resolvedIndex;
-  }
-
   const guards = evaluateGuards(context, op.opId, op.guards);
   if (!guards.ok) {
     return guards;
   }
 
-  const movedChildIds = [...destinationSiblings];
-  movedChildIds.splice(resolvedIndex.index, 0, op.nodeId);
-  if (currentParentId === op.newParentId && sameNodeIdOrder(movedChildIds, currentSiblingIds)) {
+  const currentOrder = getSiblingOrder(context, currentParentId);
+  const destinationOrder = getSiblingOrder(context, op.newParentId);
+  let targetPrevious: NodeId | null;
+  if (!position || "atEnd" in position) {
+    targetPrevious = destinationOrder.last;
+    if (currentParentId === op.newParentId && targetPrevious === op.nodeId) {
+      targetPrevious = destinationOrder.previous.get(op.nodeId) ?? null;
+    }
+  } else if ("atStart" in position) {
+    targetPrevious = null;
+  } else if ("afterId" in position) {
+    if (overlay.index.parentById.get(position.afterId) !== op.newParentId) {
+      return {
+        ok: false,
+        conflict: toConflict(
+          op.opId,
+          "AnchorMissing",
+          `Anchor node "${position.afterId}" is not a child of "${op.newParentId}".`,
+          { nodeId: op.newParentId },
+        ),
+      };
+    }
+    targetPrevious = position.afterId;
+  } else {
+    if (overlay.index.parentById.get(position.beforeId) !== op.newParentId) {
+      return {
+        ok: false,
+        conflict: toConflict(
+          op.opId,
+          "AnchorMissing",
+          `Anchor node "${position.beforeId}" is not a child of "${op.newParentId}".`,
+          { nodeId: op.newParentId },
+        ),
+      };
+    }
+    targetPrevious = destinationOrder.previous.get(position.beforeId) ?? null;
+    if (currentParentId === op.newParentId && targetPrevious === op.nodeId) {
+      targetPrevious = currentOrder.previous.get(op.nodeId) ?? null;
+    }
+  }
+
+  if (
+    currentParentId === op.newParentId &&
+    (currentOrder.previous.get(op.nodeId) ?? null) === targetPrevious
+  ) {
     return { ok: true };
   }
 
-  if (currentParentId === op.newParentId) {
-    setParentChildIds(overlay, currentParentId, movedChildIds);
-    updateSiblingPositions(overlay, currentParentId);
-    invalidateSubtreeHashes(overlay, currentParentId);
-    return { ok: true };
+  const previous = currentOrder.previous.get(op.nodeId) ?? null;
+  const next = currentOrder.next.get(op.nodeId) ?? null;
+  if (previous === null) {
+    currentOrder.first = next;
+  } else {
+    currentOrder.next.set(previous, next);
   }
+  if (next === null) {
+    currentOrder.last = previous;
+  } else {
+    currentOrder.previous.set(next, previous);
+  }
+  currentOrder.dirty = true;
 
-  const oldSiblingIds = currentSiblingIds.filter((childId) => childId !== op.nodeId);
-  setParentChildIds(overlay, currentParentId, oldSiblingIds);
-  setParentChildIds(overlay, newParent.id, movedChildIds);
+  if (targetPrevious === null) {
+    const first = destinationOrder.first;
+    destinationOrder.first = op.nodeId;
+    destinationOrder.previous.set(op.nodeId, null);
+    destinationOrder.next.set(op.nodeId, first);
+    if (first === null) {
+      destinationOrder.last = op.nodeId;
+    } else {
+      destinationOrder.previous.set(first, op.nodeId);
+    }
+  } else {
+    const destinationNext = destinationOrder.next.get(targetPrevious) ?? null;
+    destinationOrder.next.set(targetPrevious, op.nodeId);
+    destinationOrder.previous.set(op.nodeId, targetPrevious);
+    destinationOrder.next.set(op.nodeId, destinationNext);
+    if (destinationNext === null) {
+      destinationOrder.last = op.nodeId;
+    } else {
+      destinationOrder.previous.set(destinationNext, op.nodeId);
+    }
+  }
+  destinationOrder.dirty = true;
   overlay.index.parentById.set(op.nodeId, newParent.id);
 
-  const nextDepth = (overlay.index.depthById.get(newParent.id) ?? 0) + 1;
-  reindexSubtreeDepths(overlay, op.nodeId, nextDepth);
-  updateSiblingPositions(overlay, currentParentId);
-  updateSiblingPositions(overlay, newParent.id);
+  if (currentParentId !== op.newParentId) {
+    const nextDepth = (overlay.index.depthById.get(newParent.id) ?? 0) + 1;
+    reindexSubtreeDepths(overlay, op.nodeId, nextDepth);
+  }
   invalidateSubtreeHashes(overlay, currentParentId);
   invalidateSubtreeHashes(overlay, newParent.id);
   return { ok: true };
@@ -1364,6 +1482,10 @@ function applyOperation<TTypes extends NodeTypeMap>(
   context: ExecutionContext<TTypes>,
   op: PatchOp,
 ): OperationResult {
+  if (op.kind !== "moveNode") {
+    clearSiblingOrders(context);
+  }
+
   switch (op.kind) {
     case "setAttr":
       return applySetAttr(context, op);
@@ -1391,6 +1513,7 @@ export function createPatchExecutionSession<TTypes extends NodeTypeMap>(
   return {
     overlay,
     tree: overlay.treeView,
+    siblingOrders: new Map(),
   };
 }
 
@@ -1398,7 +1521,13 @@ export function applyOperationInSession<TTypes extends NodeTypeMap>(
   session: PatchExecutionSession<TTypes>,
   op: PatchOp,
 ): OperationResult {
-  return applyOperation({ overlay: session.overlay }, op);
+  const context = {
+    overlay: session.overlay,
+    siblingOrders: session.siblingOrders,
+  };
+  const result = applyOperation(context, op);
+  clearSiblingOrders(context);
+  return result;
 }
 
 function freezeNodeForSnapshot<TTypes extends NodeTypeMap>(
@@ -1591,13 +1720,17 @@ export function executePatchInternal<TTypes extends NodeTypeMap>(
 
   const sourceStateHash = getTreeRevisionHash(source);
   const session = createPatchExecutionSession(source);
+  const context: ExecutionContext<TTypes> = {
+    overlay: session.overlay,
+    siblingOrders: session.siblingOrders,
+  };
   const conflicts: PatchConflict[] = [];
   const appliedOps: PatchOp[] = [];
   const appliedOpIds: string[] = [];
   const skippedOpIds: string[] = [];
 
   for (const op of patch.ops) {
-    const result = applyOperationInSession(session, op);
+    const result = applyOperation(context, op);
     if (!result.ok) {
       conflicts.push(result.conflict);
       skippedOpIds.push(op.opId);
@@ -1610,6 +1743,7 @@ export function executePatchInternal<TTypes extends NodeTypeMap>(
     appliedOps.push(op);
     appliedOpIds.push(op.opId);
   }
+  clearSiblingOrders(context);
 
   const revision = computeRevisionStatus(source as IndexedTree<NodeTypeMap>, patch);
   if (!options.produceTree || (conflicts.length > 0 && options.mode === "atomic")) {
