@@ -284,6 +284,120 @@ function collapseReplacementRoots<TTypes extends NodeTypeMap>(
   return collapsed;
 }
 
+function collectReplacementAncestors<TTypes extends NodeTypeMap>(
+  tree: IndexedTree<TTypes>,
+  replacementRoots: ReadonlySet<NodeId>,
+  nodeId: NodeId,
+): ReadonlySet<NodeId> {
+  const ancestors = new Set<NodeId>();
+  let current: NodeId | null = nodeId;
+  while (current != null) {
+    if (replacementRoots.has(current)) {
+      ancestors.add(current);
+    }
+    current = tree.index.parentById.get(current) ?? null;
+  }
+  return ancestors;
+}
+
+function isWithinSubtree<TTypes extends NodeTypeMap>(
+  tree: IndexedTree<TTypes>,
+  nodeId: NodeId,
+  rootId: NodeId,
+): boolean {
+  let current: NodeId | null = nodeId;
+  while (current != null) {
+    if (current === rootId) {
+      return true;
+    }
+    current = tree.index.parentById.get(current) ?? null;
+  }
+  return false;
+}
+
+function findSharedReplacementAncestor<TTypes extends NodeTypeMap>(
+  base: IndexedTree<TTypes>,
+  target: IndexedTree<TTypes>,
+  replacementRootId: NodeId,
+  movedNodeId: NodeId,
+): NodeId {
+  let current: NodeId | null = replacementRootId;
+  while (current != null) {
+    if (
+      base.nodes.has(current) &&
+      isWithinSubtree(base, replacementRootId, current) &&
+      isWithinSubtree(base, movedNodeId, current) &&
+      isWithinSubtree(target, movedNodeId, current)
+    ) {
+      return current;
+    }
+    current = target.index.parentById.get(current) ?? null;
+  }
+
+  return target.rootId;
+}
+
+function stabilizeReplacementBoundaries<TTypes extends NodeTypeMap>(
+  base: IndexedTree<TTypes>,
+  target: IndexedTree<TTypes>,
+  candidates: ReadonlySet<NodeId>,
+): ReadonlySet<NodeId> {
+  let roots = collapseReplacementRoots(target, candidates);
+
+  // A move across a replacement boundary would either mutate the guarded
+  // subtree before replacement or collide with a live node during replacement.
+  // Promote that boundary until it contains the moved subtree in both trees.
+  while (roots.size > 0) {
+    const promotions = new Map<NodeId, NodeId>();
+    for (const [nodeId] of base.nodes) {
+      if (
+        !target.nodes.has(nodeId) ||
+        (base.index.parentById.get(nodeId) ?? null) ===
+          (target.index.parentById.get(nodeId) ?? null)
+      ) {
+        continue;
+      }
+
+      const baseRoots = collectReplacementAncestors(base, roots, nodeId);
+      const targetRoots = collectReplacementAncestors(target, roots, nodeId);
+      for (const replacementRootId of new Set([
+        ...baseRoots,
+        ...targetRoots,
+      ])) {
+        if (
+          baseRoots.has(replacementRootId) ===
+          targetRoots.has(replacementRootId)
+        ) {
+          continue;
+        }
+
+        promotions.set(
+          replacementRootId,
+          findSharedReplacementAncestor(
+            base,
+            target,
+            replacementRootId,
+            nodeId,
+          ),
+        );
+      }
+    }
+
+    if (promotions.size === 0) {
+      return roots;
+    }
+
+    const promoted = new Set(roots);
+    for (const [replacementRootId, ancestorId] of promotions) {
+      promoted.delete(replacementRootId);
+      promoted.add(ancestorId);
+    }
+    roots = collapseReplacementRoots(target, promoted);
+  }
+
+  return roots;
+}
+
 function computeSubtreeNodeCounts<TTypes extends NodeTypeMap>(
   tree: IndexedTree<TTypes>,
 ): ReadonlyMap<NodeId, number> {
@@ -1032,7 +1146,7 @@ function collectReplacementRoots<TTypes extends NodeTypeMap>(
     }
   }
 
-  return collapseReplacementRoots(target, candidates);
+  return stabilizeReplacementBoundaries(base, target, candidates);
 }
 
 function buildPlanningState<TTypes extends NodeTypeMap>(
@@ -1125,13 +1239,11 @@ function insertPlanningSubtree<TTypes extends NodeTypeMap>(
     return;
   }
 
-  const targetParent = target.nodes.get(parentId);
-  const targetIndex = target.index.positionById.get(nodeId) ?? 0;
   linkPlanningNodeAfter(
     planning,
     nodeId,
     parentId,
-    targetIndex > 0 ? targetParent?.childIds[targetIndex - 1] : undefined,
+    planning.lastChildByParent.get(parentId) ?? undefined,
   );
 
   const stack: Array<{ nodeId: NodeId; parentId: NodeId }> = [{
@@ -1189,7 +1301,9 @@ function collectInsertOps<TTypes extends NodeTypeMap>(
     }
     if (!context.base.nodes.has(childId)) {
       const parentId = nodeId;
-      const position = makePositionFromTarget(context.target, childId);
+      // Insert new siblings in target order at the current end. Their relative
+      // order then stays stable while source-backed siblings move around them.
+      const position: ChildPosition = { atEnd: true };
       const op: InsertNodeOp = {
         kind: "insertNode",
         opId: context.opIds("insert", childId),

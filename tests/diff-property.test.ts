@@ -12,6 +12,7 @@ import {
 
 type PropertyTypes = {
   X: Record<string, JsonValue>;
+  Y: Record<string, JsonValue>;
 };
 
 function createBaseDocument(): TreeDocument<PropertyTypes> {
@@ -87,6 +88,9 @@ test("deterministic mixed transforms preserve diff/apply round trips", () => {
       } else if (choice < 0.45) {
         delete node.attrs.optional;
       }
+      if (random() < 0.08 && node.id !== "root") {
+        node.type = node.type === "X" ? "Y" : "X";
+      }
     }
 
     shuffle(root.children, random);
@@ -104,12 +108,16 @@ test("deterministic mixed transforms preserve diff/apply round trips", () => {
 
     if (random() < 0.5) {
       const parent = root.children[Math.floor(random() * root.children.length)];
-      parent?.children.push({
-        id: `inserted-${seed}`,
-        type: "X",
-        attrs: { value: seed },
-        children: [],
-      });
+      parent?.children.splice(
+        Math.floor(random() * (parent.children.length + 1)),
+        0,
+        {
+          id: `inserted-${seed}`,
+          type: "X",
+          attrs: { value: seed },
+          children: [],
+        },
+      );
     }
 
     if (random() < 0.25 && root.children.length > 1) {

@@ -4,6 +4,7 @@ import test from "node:test";
 import {
   applyPatch,
   createDocument,
+  createResolutionSession,
   diffTrees,
   InvalidResolutionInputError,
   materialize,
@@ -179,6 +180,54 @@ test("diffTrees returns a deterministic empty patch for equal trees", () => {
   assert.equal(first.ops.length, 0);
   assert.equal(first.baseRevision, "rev-1");
   assert.match(first.patchId, /^diff:/);
+});
+
+test("diffTrees preserves inserted siblings around reordered existing siblings", () => {
+  const richText = (id: string) => ({
+    id,
+    type: "RichText" as const,
+    attrs: { html: `<p>${id}</p>` },
+    children: [],
+  });
+  const base = createTree({
+    root: {
+      id: "root",
+      type: "Page",
+      attrs: {},
+      children: [richText("a"), richText("b")],
+    },
+  });
+  const target = createTree({
+    root: {
+      id: "root",
+      type: "Page",
+      attrs: {},
+      children: [
+        richText("b"),
+        richText("x"),
+        richText("a"),
+        richText("y"),
+      ],
+    },
+  });
+
+  const patch = assertDiffRoundTrip(base, target);
+  assert.deepEqual(
+    patch.ops.map((op) =>
+      `${op.kind}:${
+        "nodeId" in op
+          ? op.nodeId
+          : op.kind === "insertNode"
+            ? op.node.id
+            : ""
+      }`),
+    [
+      "insertNode:x",
+      "insertNode:y",
+      "moveNode:b",
+      "moveNode:a",
+    ],
+  );
 });
 
 test("reorder and visibility operation order ignores node map history", () => {
@@ -566,6 +615,84 @@ test("diffTrees uses replaceSubtree for type changes and honors replacement thre
     ),
     false,
   );
+});
+
+test("type-changing replacements remain valid when nodes cross the replacement boundary", () => {
+  const moved = {
+    id: "moved",
+    type: "RichText" as const,
+    attrs: { html: "<p>Moved</p>" },
+    children: [],
+  };
+  const makeTree = (direction: "out" | "in", target: boolean) =>
+    createTree({
+      root: {
+        id: "root",
+        type: "Page",
+        attrs: {},
+        children: [
+          target
+            ? {
+                id: "changing",
+                type: "RichText",
+                attrs: { html: "<p>Changed type</p>" },
+                children:
+                  direction === "in"
+                    ? [structuredClone(moved)]
+                    : [],
+              }
+            : {
+                id: "changing",
+                type: "Section",
+                attrs: { label: "Before" },
+                children:
+                  direction === "out"
+                    ? [structuredClone(moved)]
+                    : [],
+              },
+          {
+            id: "holder",
+            type: "Section",
+            attrs: { label: "Holder" },
+            children:
+              (direction === "out") === target
+                ? [structuredClone(moved)]
+                : [],
+          },
+        ],
+      },
+    });
+
+  for (const direction of ["out", "in"] as const) {
+    const base = makeTree(direction, false);
+    const target = makeTree(direction, true);
+    const patch = assertDiffRoundTrip(base, target);
+
+    const rebased = rebasePatch(base, base, patch);
+    assert.deepEqual(rebased.conflicts, [], `${direction} rebase`);
+    assert.ok(rebased.preview);
+    assert.deepEqual(
+      materializeShape(rebased.preview),
+      materializeShape(target),
+      `${direction} rebase preview`,
+    );
+
+    const built = createResolutionSession(base, base, patch).build();
+    assert.equal(built.status, "resolved", `${direction} resolution`);
+    if (built.status === "resolved") {
+      const applied = applyPatch(base, built.resolvedPatch, {
+        includeHidden: false,
+      });
+      assert.equal(applied.status, "applied", `${direction} resolved patch`);
+      if (applied.status === "applied") {
+        assert.deepEqual(
+          stripMaterialized(applied.materialized),
+          materializeShape(target),
+          `${direction} resolved materialization`,
+        );
+      }
+    }
+  }
 });
 
 test("diffTrees falls back to replaceSubtree for unsupported source-backed moves under patch-owned parents", () => {
