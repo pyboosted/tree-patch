@@ -32,7 +32,7 @@ import {
   getTreeRevisionHash,
   joinJsonPointer,
 } from "./hash.js";
-import { getTreeState } from "./state.js";
+import { attachTreeState, getTreeState } from "./state.js";
 import { isPlainObject } from "./snapshot.js";
 import type { CompiledTreeSchema } from "../schema/schema.js";
 import {
@@ -42,9 +42,9 @@ import { resolvePointer } from "../schema/pointers.js";
 import {
   type CompiledSchemas,
   encodeRuntimeValueForPointer,
+  getSemanticComparisonNodeTypes,
   getValueAdapterForSchemas,
   isAtomicForSchemas,
-  schemasRequireSemanticComparison,
 } from "../schema/runtime-values.js";
 import { hashStableParts } from "./stable-hash.js";
 import { cloneJsonValue, deepEqual } from "../schema/adapters.js";
@@ -56,12 +56,27 @@ interface DiffContext<TTypes extends NodeTypeMap> {
   readonly baseState: ReturnType<typeof getTreeState<TTypes>>;
   readonly targetState: ReturnType<typeof getTreeState<TTypes>>;
   readonly schemas: CompiledSchemas<TTypes>;
+  readonly semanticComparisonNodeTypes: ReadonlySet<string>;
   readonly options: DiffOptions<TTypes>;
   readonly targetPatchOwned: ReadonlySet<NodeId>;
   readonly replacementRoots: ReadonlySet<NodeId>;
   readonly replacementCoveredInBase: ReadonlySet<NodeId>;
   readonly replacementCoveredInTarget: ReadonlySet<NodeId>;
   readonly opIds: ReturnType<typeof createOpIdFactory>;
+}
+
+function createRawTreeView<TTypes extends NodeTypeMap>(
+  tree: IndexedTree<TTypes>,
+): IndexedTree<TTypes> {
+  const state = getTreeState(tree);
+  const rawTree = {
+    ...tree,
+    nodes: state.nodes,
+    index: state.index,
+    cache: state.cache,
+  } as IndexedTree<TTypes>;
+  attachTreeState(rawTree, state);
+  return rawTree;
 }
 
 interface ThresholdPrecomputation {
@@ -209,6 +224,10 @@ function collapseReplacementRoots<TTypes extends NodeTypeMap>(
   target: IndexedTree<TTypes>,
   candidates: ReadonlySet<NodeId>,
 ): ReadonlySet<NodeId> {
+  if (candidates.size === 0) {
+    return candidates;
+  }
+
   const collapsed = new Set<NodeId>();
   const stack: Array<{ nodeId: NodeId; covered: boolean }> = [{
     nodeId: target.rootId,
@@ -1325,7 +1344,6 @@ function collectAttrOps<TTypes extends NodeTypeMap>(
   context: DiffContext<TTypes>,
 ): Array<SetAttrOp | RemoveAttrOp> {
   const ops: Array<SetAttrOp | RemoveAttrOp> = [];
-  const requiresSemanticComparison = schemasRequireSemanticComparison(context.schemas);
 
   for (const [nodeId, baseNode] of context.base.nodes) {
     const targetNode = context.target.nodes.get(nodeId);
@@ -1337,12 +1355,13 @@ function collectAttrOps<TTypes extends NodeTypeMap>(
     }
 
     if (
-      !requiresSemanticComparison &&
       getSubtreeHash(context.base, nodeId) === getSubtreeHash(context.target, nodeId)
     ) {
       continue;
     }
 
+    const requiresSemanticComparison =
+      context.semanticComparisonNodeTypes.has(String(baseNode.type));
     if (
       requiresSemanticComparison ||
       getNodeHash(context.base, nodeId) !== getNodeHash(context.target, nodeId)
@@ -1581,11 +1600,12 @@ export function diffTrees<TTypes extends NodeTypeMap>(
     );
   }
 
+  base = createRawTreeView(base);
+  target = createRawTreeView(target);
   const schemas = getCompiledSchemas(base, target, options);
   const baseHiddenSignature = collectExplicitHiddenSignature(base);
   const targetHiddenSignature = collectExplicitHiddenSignature(target);
   if (
-    !schemasRequireSemanticComparison(schemas) &&
     getSubtreeHash(base, base.rootId) === getSubtreeHash(target, target.rootId) &&
     baseHiddenSignature === targetHiddenSignature
   ) {
@@ -1607,6 +1627,7 @@ export function diffTrees<TTypes extends NodeTypeMap>(
     baseState: getTreeState(base),
     targetState: getTreeState(target),
     schemas,
+    semanticComparisonNodeTypes: getSemanticComparisonNodeTypes(schemas),
     options,
     targetPatchOwned,
     replacementRoots,

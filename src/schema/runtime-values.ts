@@ -56,20 +56,22 @@ export function runtimeValuesEqualForSchemas<TTypes extends NodeTypeMap>(
     : deepEqual(left, right);
 }
 
-export function schemasRequireSemanticComparison<TTypes extends NodeTypeMap>(
+export function getSemanticComparisonNodeTypes<TTypes extends NodeTypeMap>(
   schemas: CompiledSchemas<TTypes>,
-): boolean {
+): ReadonlySet<string> {
+  const nodeTypes = new Set<string>();
   for (const schema of schemas) {
-    for (const spec of schema.types.values()) {
+    for (const [nodeType, spec] of schema.types) {
       for (const adapter of spec.adapters.values()) {
         if (!adapter.hash) {
-          return true;
+          nodeTypes.add(nodeType);
+          break;
         }
       }
     }
   }
 
-  return false;
+  return nodeTypes;
 }
 
 export function encodeRuntimeValueForPointer<TTypes extends NodeTypeMap>(

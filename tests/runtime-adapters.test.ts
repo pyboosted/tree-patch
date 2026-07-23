@@ -130,6 +130,86 @@ test("custom equals without hash controls diff and builder guards", () => {
   assert.equal(applied.materialized.attrs.value, "Beta");
 });
 
+test("equal subtree hashes bypass broader adapter equality", () => {
+  type LabelTypes = {
+    Label: { value: string };
+  };
+  let equalsCount = 0;
+  const schema = {
+    types: {
+      Label: {
+        adapters: {
+          "/value": {
+            equals: (left: string, right: string) => {
+              equalsCount += 1;
+              return left.toLowerCase() === right.toLowerCase();
+            },
+            clone: (value: string) => value,
+          },
+        },
+      },
+    },
+  } satisfies TreeSchema<LabelTypes>;
+  const makeTree = () => createDocument<LabelTypes>({
+    root: {
+      id: "root",
+      type: "Label",
+      attrs: { value: "Alpha" },
+      children: [],
+    },
+  }, { schema });
+  const base = makeTree();
+  const target = makeTree();
+  equalsCount = 0;
+
+  assert.deepEqual(diffTrees(base, target).ops, []);
+  assert.equal(equalsCount, 0);
+});
+
+test("diff reads adapter-backed values from internal state without defensive clones", () => {
+  type EventTypes = {
+    Event: { when: Date };
+  };
+  let cloneCount = 0;
+  const schema = {
+    types: {
+      Event: {
+        adapters: {
+          "/when": {
+            equals: (left: Date, right: Date) =>
+              left.getTime() === right.getTime(),
+            hash: (value: Date) => value.toISOString(),
+            clone: (value: Date) => {
+              cloneCount += 1;
+              return new Date(value.getTime());
+            },
+            codec: {
+              codecId: "date",
+              serialize: (value: Date) => value.toISOString(),
+              deserialize: (value: string) => new Date(value),
+            },
+          },
+        },
+      },
+    },
+  } satisfies TreeSchema<EventTypes>;
+  const makeTree = (day: string) => createDocument<EventTypes>({
+    root: {
+      id: "root",
+      type: "Event",
+      attrs: { when: new Date(`2026-07-${day}T00:00:00.000Z`) },
+      children: [],
+    },
+  }, { schema });
+  const base = makeTree("22");
+  const target = makeTree("23");
+  cloneCount = 0;
+
+  const patch = diffTrees(base, target);
+  assert.equal(patch.ops.length, 1);
+  assert.equal(cloneCount, 0);
+});
+
 test("a codec registered for a whole plain object owns its persisted representation", () => {
   type Box = RuntimeTypes["Boxed"]["box"];
   const schema = {
