@@ -273,13 +273,12 @@ export function createDocument<TTypes extends NodeTypeMap>(
       ),
     }),
   };
-  const tree = treeBase as IndexedTree<TTypes>;
-  if (input.revision !== undefined) {
-    tree.revision = input.revision;
-  }
-  if (input.metadata !== undefined) {
-    tree.metadata = cloneMetadata(input.metadata, ownership)!;
-  }
+  const metadata = cloneMetadata(input.metadata, ownership);
+  const tree = {
+    ...treeBase,
+    ...(input.revision !== undefined ? { revision: input.revision } : {}),
+    ...(metadata !== undefined ? { metadata } : {}),
+  } as IndexedTree<TTypes>;
 
   attachTreeState(tree, {
     ownership,
@@ -301,7 +300,10 @@ export function createDocument<TTypes extends NodeTypeMap>(
   });
 
   if (tree.revision === undefined) {
-    tree.revision = getTreeRevisionHash(tree);
+    Object.defineProperty(tree, "revision", {
+      enumerable: true,
+      value: getTreeRevisionHash(tree),
+    });
   }
 
   return Object.freeze(tree);

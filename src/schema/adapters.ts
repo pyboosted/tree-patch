@@ -220,7 +220,7 @@ export function deepEqual(left: unknown, right: unknown): boolean {
 
   while (stack.length > 0) {
     const [currentLeft, currentRight] = stack.pop()!;
-    if (Object.is(currentLeft, currentRight)) {
+    if (currentLeft === currentRight) {
       continue;
     }
     if (

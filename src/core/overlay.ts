@@ -66,14 +66,9 @@ export function createOverlayState<TTypes extends NodeTypeMap>(
       subtreeHashById: state.cache.subtreeHashById,
       pathHashByNodeId: state.cache.pathHashByNodeId,
     },
+    ...(source.revision !== undefined ? { revision: source.revision } : {}),
+    ...(source.metadata !== undefined ? { metadata: source.metadata } : {}),
   } as IndexedTree<TTypes>;
-
-  if (source.revision !== undefined) {
-    treeView.revision = source.revision;
-  }
-  if (source.metadata !== undefined) {
-    treeView.metadata = source.metadata;
-  }
 
   state.treeView = treeView;
   attachTreeState(treeView, state);

@@ -137,34 +137,34 @@ export interface TreeSchema<TTypes extends NodeTypeMap> {
 }
 
 export interface TreeIndex {
-  parentById: ReadonlyMap<NodeId, NodeId | null>;
-  positionById: ReadonlyMap<NodeId, number>;
-  depthById: ReadonlyMap<NodeId, number>;
+  readonly parentById: ReadonlyMap<NodeId, NodeId | null>;
+  readonly positionById: ReadonlyMap<NodeId, number>;
+  readonly depthById: ReadonlyMap<NodeId, number>;
 }
 
 export interface TreeCache {
-  nodeHashById: ReadonlyMap<NodeId, string>;
-  subtreeHashById: ReadonlyMap<NodeId, string>;
-  pathHashByNodeId: ReadonlyMap<NodeId, ReadonlyMap<JsonPointer, string>>;
+  readonly nodeHashById: ReadonlyMap<NodeId, string>;
+  readonly subtreeHashById: ReadonlyMap<NodeId, string>;
+  readonly pathHashByNodeId: ReadonlyMap<NodeId, ReadonlyMap<JsonPointer, string>>;
 }
 
 export interface IndexedNode<
   TTypes extends NodeTypeMap,
   TType extends NodeTypeKey<TTypes> = NodeTypeKey<TTypes>,
 > {
-  id: NodeId;
-  type: TType;
-  attrs: TTypes[TType];
-  childIds: readonly NodeId[];
+  readonly id: NodeId;
+  readonly type: TType;
+  readonly attrs: TTypes[TType];
+  readonly childIds: readonly NodeId[];
 }
 
 export interface IndexedTree<TTypes extends NodeTypeMap> {
-  rootId: NodeId;
-  nodes: ReadonlyMap<NodeId, IndexedNode<TTypes>>;
-  revision?: string;
-  metadata?: Readonly<JsonObject>;
-  index: TreeIndex;
-  cache: TreeCache;
+  readonly rootId: NodeId;
+  readonly nodes: ReadonlyMap<NodeId, IndexedNode<TTypes>>;
+  readonly revision?: string;
+  readonly metadata?: Readonly<JsonObject>;
+  readonly index: TreeIndex;
+  readonly cache: TreeCache;
 }
 
 export interface SerializedPatchNode {
@@ -200,6 +200,7 @@ export interface SetAttrOp {
   opId: string;
   nodeId: NodeId;
   path: JsonPointer;
+  pathKinds?: readonly ("property" | "index")[];
   value: PersistedValue;
   guards?: readonly Guard[];
 }
@@ -382,13 +383,13 @@ export type ApplyResult<TTypes extends NodeTypeMap> =
       status: "applied";
       revision: RevisionStatus;
       tree: IndexedTree<TTypes>;
-      materialized: MaterializedNode<TTypes>;
+      materialized: AnyMaterializedNode<TTypes>;
     }
   | {
       status: "preview";
       revision: RevisionStatus;
       tree: IndexedTree<TTypes>;
-      materialized: MaterializedNode<TTypes>;
+      materialized: AnyMaterializedNode<TTypes>;
       conflicts: readonly PatchConflict[];
     }
   | {

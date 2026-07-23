@@ -5,7 +5,6 @@ import {
   type MutableMapLike,
 } from "./cow.js";
 
-const HASH_PREFIX_LENGTH = 3;
 const HASH_LANES = 4;
 const LANE_HEX_LENGTH = 8;
 const LANE_SEEDS = [
@@ -27,8 +26,9 @@ function mix32(value: number): number {
 }
 
 function hashLane(hash: string, lane: number): number {
+  const versionPrefix = /^h\d+:/.exec(hash)?.[0].length ?? 0;
   const offset =
-    (hash.startsWith("h2:") ? HASH_PREFIX_LENGTH : 0) +
+    versionPrefix +
     lane * LANE_HEX_LENGTH;
   const parsed = Number.parseInt(
     hash.slice(offset, offset + LANE_HEX_LENGTH),

@@ -19,7 +19,7 @@ import {
 import { resolvePointer } from "../schema/pointers.js";
 import { ChildHashAggregate } from "./child-hash.js";
 
-export const HASH_VERSION = "h2";
+export const HASH_VERSION = "h3";
 
 function versionHash(hash: string): string {
   return `${HASH_VERSION}:${hash}`;
@@ -411,11 +411,13 @@ export function getTreeRevisionHash<TTypes extends NodeTypeMap>(
   const hidden = [...state.explicitHidden].sort();
   const patchOwned = [...state.patchOwned].sort();
   const metadata = canonicalizeJsonValue(tree.metadata ?? null);
+  const hiddenHash = hashStableParts(["explicit-hidden", ...hidden]);
+  const patchOwnedHash = hashStableParts(["patch-owned", ...patchOwned]);
   return `tree:${HASH_VERSION}:${hashStableParts([
     "revision",
     getSubtreeHash(tree, tree.rootId),
-    hidden.join("\u0000"),
-    patchOwned.join("\u0000"),
+    hiddenHash,
+    patchOwnedHash,
     metadata,
   ])}`;
 }

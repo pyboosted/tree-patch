@@ -520,6 +520,9 @@ class PatchBuilderController<TTypes extends NodeTypeMap> {
     explicitNodeType?: string,
   ): void {
     const pointer = pathToPointer(path as AttrPath<unknown>);
+    const pathKinds = path.map((segment) =>
+      typeof segment === "number" ? "index" as const : "property" as const
+    );
     const nodeType = this.resolveNodeType(nodeId, explicitNodeType);
     if (options?.expectAbsent && Object.hasOwn(options, "expect")) {
       throw new MalformedPatchError(
@@ -540,6 +543,7 @@ class PatchBuilderController<TTypes extends NodeTypeMap> {
       opId: this.opIds("set", nodeId, pointer),
       nodeId,
       path: pointer,
+      ...(pathKinds.includes("index") ? { pathKinds } : {}),
       value: encodeRuntimeValueForPointer(this.schemas, nodeType, pointer, value),
       ...(guards?.length ? { guards } : {}),
     });

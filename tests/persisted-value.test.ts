@@ -31,6 +31,8 @@ test("default JSON adapter uses deterministic equality, hashing, and cloning", (
 
   assert.equal(defaultJsonValueAdapter.equals(left, right), true);
   assert.equal(defaultJsonValueAdapter.hash?.(left), defaultJsonValueAdapter.hash?.(right));
+  assert.equal(defaultJsonValueAdapter.equals(-0, 0), true);
+  assert.equal(defaultJsonValueAdapter.hash?.(-0), defaultJsonValueAdapter.hash?.(0));
 
   const clone = defaultJsonValueAdapter.clone?.(left);
   assert.deepEqual(clone, left);

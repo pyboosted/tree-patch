@@ -24,6 +24,10 @@ import { getPathHash } from "../src/core/hash.js";
 type ContentTypes = {
   Page: {
     locale?: string;
+    sections?: Array<{
+      title: string;
+    }>;
+    numericLabels?: Record<string, string>;
   };
   Hero: {
     title: string;
@@ -214,6 +218,96 @@ test("builder can guard an absent field explicitly", () => {
         .patchId("bad-absence")
         .node("root", "Page")
         .set(["locale"], "fr", { expectAbsent: true }),
+    MalformedPatchError,
+  );
+});
+
+test("builder path kinds distinguish missing arrays from numeric object keys", () => {
+  const source = createSourceTree();
+  const patch = patchBuilder<ContentTypes>({ source, patchId: "nested-containers" })
+    .node("root", "Page")
+    .set(["sections", 0, "title"], "First", { expectAbsent: true })
+    .set(["numericLabels", "0"], "zero", { expectAbsent: true })
+    .build();
+
+  assert.deepEqual(
+    patch.ops[0]?.kind === "setAttr" ? patch.ops[0].pathKinds : undefined,
+    ["property", "index", "property"],
+  );
+  assert.equal(
+    patch.ops[1]?.kind === "setAttr" ? patch.ops[1].pathKinds : undefined,
+    undefined,
+  );
+
+  const result = applyPatch(source, patch);
+  assert.equal(result.status, "applied");
+  const rootAttrs = result.tree.nodes.get("root")!.attrs as ContentTypes["Page"];
+  assert.deepEqual(rootAttrs.sections, [{ title: "First" }]);
+  assert.deepEqual(rootAttrs.numericLabels, { "0": "zero" });
+
+  const sparsePathKinds = new Array<"property" | "index">(3);
+  sparsePathKinds[0] = "property";
+  sparsePathKinds[2] = "property";
+  assert.throws(
+    () => validatePatch(source, {
+      format: "tree-patch/v1",
+      patchId: "invalid-path-kinds",
+      ops: [{
+        kind: "setAttr",
+        opId: "set-section",
+        nodeId: "root",
+        path: "/sections/0/title",
+        pathKinds: sparsePathKinds,
+        value: "Invalid",
+      }],
+    }),
+    MalformedPatchError,
+  );
+});
+
+test("builder can initialize an existing empty array at index zero", () => {
+  const source = createDocument<ContentTypes>({
+    root: {
+      id: "root",
+      type: "Page",
+      attrs: {
+        sections: [],
+      },
+      children: [],
+    },
+  });
+  const patch = patchBuilder<ContentTypes>({
+    source,
+    patchId: "existing-empty-array",
+  })
+    .node("root", "Page")
+    .set(["sections", 0, "title"], "First", { expectAbsent: true })
+    .build();
+
+  assert.deepEqual(
+    patch.ops[0]?.kind === "setAttr" ? patch.ops[0].pathKinds : undefined,
+    ["property", "index", "property"],
+  );
+
+  const applied = applyPatch(source, patch);
+  assert.equal(applied.status, "applied");
+  assert.equal(applied.materialized.type, "Page");
+  if (applied.materialized.type === "Page") {
+    assert.deepEqual(applied.materialized.attrs.sections, [{
+      title: "First",
+    }]);
+  }
+
+  assert.throws(
+    () =>
+      patchBuilder<ContentTypes>({
+        source,
+        patchId: "sparse-existing-array",
+      })
+        .node("root", "Page")
+        .set(["sections", 1, "title"], "Second", {
+          expectAbsent: true,
+        }),
     MalformedPatchError,
   );
 });

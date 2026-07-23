@@ -319,7 +319,45 @@ function assertPatchOp(op: unknown, index: number): asserts op is PatchOp {
           details: { location },
         });
       }
-      parseJsonPointer(candidate.path);
+      {
+        const segments = parseJsonPointer(candidate.path);
+        if (candidate.pathKinds !== undefined) {
+          if (
+            !Array.isArray(candidate.pathKinds) ||
+            candidate.pathKinds.length !== segments.length
+          ) {
+            throw new MalformedPatchError(
+              `${location}.pathKinds must describe every path segment as "property" or "index".`,
+              { details: { location } },
+            );
+          }
+
+          for (let pathIndex = 0; pathIndex < segments.length; pathIndex += 1) {
+            const kind = candidate.pathKinds[pathIndex];
+            if (kind !== "property" && kind !== "index") {
+              throw new MalformedPatchError(
+                `${location}.pathKinds must describe every path segment as "property" or "index".`,
+                { details: { location, pathIndex } },
+              );
+            }
+            if (
+              kind === "index" &&
+              !/^(0|[1-9]\d*)$/.test(segments[pathIndex]!)
+            ) {
+              throw new MalformedPatchError(
+                `${location}.pathKinds[${pathIndex}] marks a non-index pointer segment as an array index.`,
+                {
+                  details: {
+                    location,
+                    pathIndex,
+                    segment: segments[pathIndex],
+                  },
+                },
+              );
+            }
+          }
+        }
+      }
       validatePersistedValueShape(candidate.value, `${location}.value`);
       return;
     case "removeAttr":
