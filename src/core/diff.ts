@@ -88,6 +88,26 @@ interface ThresholdPrecomputation {
   readonly changedNodeCounts: ReadonlyMap<NodeId, number>;
 }
 
+function hasSameTreeStructure<TTypes extends NodeTypeMap>(
+  base: IndexedTree<TTypes>,
+  target: IndexedTree<TTypes>,
+): boolean {
+  if (base.nodes.size !== target.nodes.size) {
+    return false;
+  }
+
+  for (const [nodeId, baseNode] of base.nodes) {
+    const targetNode = target.nodes.get(nodeId);
+    if (
+      !targetNode ||
+      !hasSameNodeOrder(baseNode.childIds, targetNode.childIds)
+    ) {
+      return false;
+    }
+  }
+  return true;
+}
+
 function createOpIdFactory() {
   const counters = new Map<string, number>();
 
@@ -289,6 +309,7 @@ function countAttrChanges<TTypes extends NodeTypeMap>(
   baseValue: unknown,
   targetValue: unknown,
   pointer: JsonPointer,
+  limit = Number.POSITIVE_INFINITY,
 ): number {
   let total = 0;
   const stack: Array<{
@@ -325,6 +346,9 @@ function countAttrChanges<TTypes extends NodeTypeMap>(
         continue;
       }
       total += 1;
+      if (total >= limit) {
+        return total;
+      }
       continue;
     }
 
@@ -338,6 +362,9 @@ function countAttrChanges<TTypes extends NodeTypeMap>(
         !Object.hasOwn(current.targetValue, key)
       ) {
         total += 1;
+        if (total >= limit) {
+          return total;
+        }
       } else {
         stack.push({
           baseValue: current.baseValue[key],
@@ -445,6 +472,7 @@ function shouldReplaceSubtreeByThresholds<TTypes extends NodeTypeMap>(
       baseNode.attrs,
       targetNode.attrs,
       "",
+      thresholds.changedAttrCountGte,
     ) >= thresholds.changedAttrCountGte
   ) {
     return true;
@@ -1348,9 +1376,7 @@ function collectReorderOps<TTypes extends NodeTypeMap>(
   planning: ReturnType<typeof buildPlanningState<TTypes>>,
 ): ReorderChildrenOp[] {
   const reorders: ReorderChildrenOp[] = [];
-  const parentIds = [...context.target.nodes.keys()].sort(compareStrings);
-
-  for (const parentId of parentIds) {
+  for (const parentId of context.target.nodes.keys()) {
     if (context.replacementCoveredInTarget.has(parentId)) {
       continue;
     }
@@ -1688,15 +1714,18 @@ export function diffTrees<TTypes extends NodeTypeMap>(
     opIds: createOpIdFactory(),
   };
 
-  const planning = buildPlanningState(base, target);
-  const inserts = collectInsertOps(context, planning);
-  const reorders = collectReorderOps(context, planning);
-  const moves = collectMoveOps(context, planning);
+  const sameStructure = hasSameTreeStructure(base, target);
+  const planning = sameStructure
+    ? undefined
+    : buildPlanningState(base, target);
+  const inserts = planning ? collectInsertOps(context, planning) : [];
+  const reorders = planning ? collectReorderOps(context, planning) : [];
+  const moves = planning ? collectMoveOps(context, planning) : [];
   const attrOps = collectAttrOps(context);
   const replacements = collectReplacementOps(context);
   const replacementInserts = collectReplacementInsertOps(context);
   const visibility = collectVisibilityOps(context);
-  const removals = collectRemoveOps(context);
+  const removals = sameStructure ? [] : collectRemoveOps(context);
 
   return {
     format: "tree-patch/v1",
