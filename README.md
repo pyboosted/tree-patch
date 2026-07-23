@@ -201,12 +201,16 @@ const materialized = materialize(source, patch, {
 Behavior summary:
 
 - `validatePatch()` checks conflicts without producing a preview tree
-- `applyPatch()` returns a new immutable `IndexedTree`
+- `applyPatch()` returns a new immutable, structurally shared `IndexedTree`
 - `materialize()` uses the same conflict semantics as `applyPatch()`
 - `preparePatch()` returns a deeply frozen clone whose structural validation is
   cached for repeated validate/apply/rebase calls
 - `atomic` mode stops at the first conflict
 - `preview` mode keeps successful ops and reports skipped conflicts
+
+The nested `result.materialized` view and a changed snapshot's derived
+`tree.revision` are computed on first access and then cached. Callers that only
+need the indexed snapshot do not pay for either full-tree traversal.
 
 ## Diff and Rebase
 
