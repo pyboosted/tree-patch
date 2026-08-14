@@ -87,34 +87,86 @@ interface ThresholdPrecomputation {
   readonly changedNodeCounts: ReadonlyMap<NodeId, number>;
 }
 
-function hasSameTreeStructure<TTypes extends NodeTypeMap>(
-  base: IndexedTree<TTypes>,
-  target: IndexedTree<TTypes>,
-): boolean {
-  if (base.nodes.size !== target.nodes.size) {
-    return false;
-  }
+interface SharedNodeAnalysis<TTypes extends NodeTypeMap> {
+  readonly sameStructure: boolean;
+  readonly typeChangedIds: readonly NodeId[];
+  readonly attrOps: Array<SetAttrOp | RemoveAttrOp>;
+}
+
+function analyzeSharedNodes<TTypes extends NodeTypeMap>(
+  context: Pick<
+    DiffContext<TTypes>,
+    "base" | "target" | "schemas" | "semanticComparisonNodeTypes" | "opIds"
+  >,
+  collectAttrs: boolean,
+): SharedNodeAnalysis<TTypes> {
+  const { base, target } = context;
+  let sameStructure = base.nodes.size === target.nodes.size;
+  const typeChangedIds: NodeId[] = [];
+  const attrOps: Array<SetAttrOp | RemoveAttrOp> = [];
 
   for (const [nodeId, baseNode] of base.nodes) {
     const targetNode = target.nodes.get(nodeId);
+    if (!targetNode) {
+      sameStructure = false;
+      continue;
+    }
+
     if (
-      !targetNode ||
+      sameStructure &&
       !hasSameNodeOrder(baseNode.childIds, targetNode.childIds)
     ) {
-      return false;
+      sameStructure = false;
+    }
+
+    if (baseNode.type !== targetNode.type) {
+      typeChangedIds.push(nodeId);
+      continue;
+    }
+
+    if (!collectAttrs) {
+      continue;
+    }
+
+    if (getSubtreeHash(base, nodeId) === getSubtreeHash(target, nodeId)) {
+      continue;
+    }
+
+    const requiresSemanticComparison =
+      context.semanticComparisonNodeTypes.has(String(baseNode.type));
+    if (
+      requiresSemanticComparison ||
+      getNodeHash(base, nodeId) !== getNodeHash(target, nodeId)
+    ) {
+      collectAttrOpsForNode(
+        context,
+        nodeId,
+        "",
+        baseNode.attrs,
+        targetNode.attrs,
+        attrOps,
+      );
     }
   }
-  return true;
+
+  return { sameStructure, typeChangedIds, attrOps };
 }
 
 function setsEqual<TValue>(
   left: ReadonlySet<TValue>,
   right: ReadonlySet<TValue>,
 ): boolean {
-  return (
-    left.size === right.size &&
-    [...left].every((value) => right.has(value))
-  );
+  if (left.size !== right.size) {
+    return false;
+  }
+
+  for (const value of left) {
+    if (!right.has(value)) {
+      return false;
+    }
+  }
+
+  return true;
 }
 
 function createOpIdFactory() {
@@ -865,10 +917,17 @@ function hasSameNodeOrder(
   left: readonly NodeId[],
   right: readonly NodeId[],
 ): boolean {
-  return (
-    left.length === right.length &&
-    left.every((nodeId, index) => nodeId === right[index])
-  );
+  if (left.length !== right.length) {
+    return false;
+  }
+
+  for (let index = 0; index < left.length; index += 1) {
+    if (left[index] !== right[index]) {
+      return false;
+    }
+  }
+
+  return true;
 }
 
 function getValueAtPointer<TTypes extends NodeTypeMap>(
@@ -890,7 +949,7 @@ function getValueAtPointer<TTypes extends NodeTypeMap>(
 }
 
 function createValueGuard<TTypes extends NodeTypeMap>(
-  context: DiffContext<TTypes>,
+  context: Pick<DiffContext<TTypes>, "base" | "schemas">,
   nodeId: NodeId,
   pointer: JsonPointer,
 ): Guard | undefined {
@@ -934,7 +993,7 @@ function createValueGuard<TTypes extends NodeTypeMap>(
 }
 
 function collectAttrOpsForNode<TTypes extends NodeTypeMap>(
-  context: DiffContext<TTypes>,
+  context: Pick<DiffContext<TTypes>, "base" | "target" | "schemas" | "opIds">,
   nodeId: NodeId,
   pointer: JsonPointer,
   baseValue: unknown,
@@ -1076,21 +1135,11 @@ function collectReplacementRoots<TTypes extends NodeTypeMap>(
   schemas: CompiledSchemas<TTypes>,
   targetPatchOwned: ReadonlySet<NodeId>,
   skipOwnershipMoveValidation: boolean,
+  typeChangedIds: readonly NodeId[],
 ): ReadonlySet<NodeId> {
   const baseState = getTreeState(base);
-  const candidates = new Set<NodeId>();
+  const candidates = new Set<NodeId>(typeChangedIds);
   const precomputedThresholds = precomputeThresholds(base, target, options);
-
-  for (const [nodeId, baseNode] of base.nodes) {
-    const targetNode = target.nodes.get(nodeId);
-    if (!targetNode) {
-      continue;
-    }
-
-    if (baseNode.type !== targetNode.type) {
-      candidates.add(nodeId);
-    }
-  }
 
   if (!skipOwnershipMoveValidation) {
     for (const [nodeId] of target.nodes) {
@@ -1825,7 +1874,20 @@ export function diffTrees<TTypes extends NodeTypeMap>(
     };
   }
 
-  const sameStructure = hasSameTreeStructure(base, target);
+  const semanticComparisonNodeTypes = getSemanticComparisonNodeTypes(schemas);
+  const collectAttrsDuringScan = options.replaceSubtreeWhen === undefined;
+  const opIds = createOpIdFactory();
+  const analysis = analyzeSharedNodes(
+    {
+      base,
+      target,
+      schemas,
+      semanticComparisonNodeTypes,
+      opIds,
+    },
+    collectAttrsDuringScan,
+  );
+  const sameStructure = analysis.sameStructure;
   const samePatchOwnership = setsEqual(
     getTreeState(base).patchOwned,
     getTreeState(target).patchOwned,
@@ -1841,6 +1903,7 @@ export function diffTrees<TTypes extends NodeTypeMap>(
     schemas,
     targetPatchOwned,
     skipOwnershipMoveValidation,
+    analysis.typeChangedIds,
   );
   const replacementCoveredInBase = collectNodesCoveredByRoots(base, replacementRoots);
   const replacementCoveredInTarget = collectNodesCoveredByRoots(target, replacementRoots);
@@ -1850,12 +1913,12 @@ export function diffTrees<TTypes extends NodeTypeMap>(
     baseState: getTreeState(base),
     targetState: getTreeState(target),
     schemas,
-    semanticComparisonNodeTypes: getSemanticComparisonNodeTypes(schemas),
+    semanticComparisonNodeTypes,
     options,
     replacementRoots,
     replacementCoveredInBase,
     replacementCoveredInTarget,
-    opIds: createOpIdFactory(),
+    opIds,
   };
 
   const planning = sameStructure
@@ -1864,7 +1927,16 @@ export function diffTrees<TTypes extends NodeTypeMap>(
   const inserts = planning ? collectInsertOps(context, planning) : [];
   const reorders = planning ? collectReorderOps(context, planning) : [];
   const moves = planning ? collectMoveOps(context, planning) : [];
-  const attrOps = collectAttrOps(context);
+  const attrOps = collectAttrsDuringScan
+    ? analysis.attrOps
+      .filter((op) => !replacementCoveredInTarget.has(op.nodeId))
+      .sort((left, right) => {
+        if (left.nodeId !== right.nodeId) {
+          return compareStrings(left.nodeId, right.nodeId);
+        }
+        return compareStrings(left.path, right.path);
+      })
+    : collectAttrOps(context);
   const replacements = collectReplacementOps(context);
   const replacementInserts = collectReplacementInsertOps(context);
   const visibility =

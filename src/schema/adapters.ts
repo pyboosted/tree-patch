@@ -1,6 +1,7 @@
 import type {
   EncodedValue,
   JsonPointer,
+  JsonPrimitive,
   JsonValue,
   PersistedValue,
   ValueAdapter,
@@ -23,6 +24,29 @@ export const defaultJsonValueAdapter: ValueAdapter<JsonValue> = {
   clone: (value) => cloneJsonValue(value),
 };
 
+function isJsonPrimitive(value: unknown): value is JsonPrimitive {
+  return (
+    value === null ||
+    typeof value === "string" ||
+    typeof value === "boolean" ||
+    (typeof value === "number" && Number.isFinite(value))
+  );
+}
+
+function isPrimitiveJsonArray(value: unknown): value is JsonPrimitive[] {
+  if (!Array.isArray(value)) {
+    return false;
+  }
+
+  for (let index = 0; index < value.length; index += 1) {
+    if (!isJsonPrimitive(value[index])) {
+      return false;
+    }
+  }
+
+  return true;
+}
+
 export function isJsonValue(value: unknown): value is JsonValue {
   const active = new WeakSet<object>();
   const stack: Array<{ value: unknown; exit?: true }> = [{ value }];
@@ -35,13 +59,7 @@ export function isJsonValue(value: unknown): value is JsonValue {
       continue;
     }
 
-    if (current === null || typeof current === "string" || typeof current === "boolean") {
-      continue;
-    }
-    if (typeof current === "number") {
-      if (!Number.isFinite(current)) {
-        return false;
-      }
+    if (isJsonPrimitive(current)) {
       continue;
     }
     if (typeof current !== "object") {
@@ -78,6 +96,13 @@ export function cloneJsonValue<TValue extends JsonValue>(value: TValue): TValue 
 export function tryCloneJsonValue(
   value: unknown,
 ): { ok: true; value: JsonValue } | { ok: false } {
+  if (isJsonPrimitive(value)) {
+    return { ok: true, value };
+  }
+  if (isPrimitiveJsonArray(value)) {
+    return { ok: true, value: value.slice() };
+  }
+
   let root: JsonValue | undefined;
   const active = new WeakSet<object>();
   type Frame =
@@ -100,12 +125,7 @@ export function tryCloneJsonValue(
       active.delete(frame.value);
       continue;
     }
-    if (
-      frame.value === null ||
-      typeof frame.value === "string" ||
-      typeof frame.value === "boolean" ||
-      (typeof frame.value === "number" && Number.isFinite(frame.value))
-    ) {
+    if (isJsonPrimitive(frame.value)) {
       frame.assign(frame.value);
       continue;
     }
@@ -119,6 +139,10 @@ export function tryCloneJsonValue(
     active.add(frame.value);
     stack.push({ kind: "exit", value: frame.value });
     if (Array.isArray(frame.value)) {
+      if (isPrimitiveJsonArray(frame.value)) {
+        frame.assign(frame.value.slice());
+        continue;
+      }
       const cloned = new Array<JsonValue>(frame.value.length);
       frame.assign(cloned);
       for (let index = frame.value.length - 1; index >= 0; index -= 1) {
@@ -152,6 +176,10 @@ export function tryCloneJsonValue(
 }
 
 export function canonicalizeJsonValue(value: JsonValue): string {
+  if (isPrimitiveJsonArray(value)) {
+    return JSON.stringify(value);
+  }
+
   const chunks: string[] = [];
   const active = new WeakSet<object>();
   type Frame =
@@ -192,6 +220,10 @@ export function canonicalizeJsonValue(value: JsonValue): string {
     active.add(current);
     stack.push({ kind: "exit", value: current });
     if (Array.isArray(current)) {
+      if (isPrimitiveJsonArray(current)) {
+        chunks.push(JSON.stringify(current));
+        continue;
+      }
       stack.push({ kind: "token", value: "]" });
       for (let index = current.length - 1; index >= 0; index -= 1) {
         stack.push({ kind: "value", value: current[index]! });

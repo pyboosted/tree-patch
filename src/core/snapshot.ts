@@ -196,10 +196,15 @@ export function setOwnEnumerableValue(
   key: string,
   value: unknown,
 ): void {
-  Object.defineProperty(target, key, {
-    configurable: true,
-    enumerable: true,
-    writable: true,
-    value,
-  });
+  if (key === "__proto__") {
+    Object.defineProperty(target, key, {
+      configurable: true,
+      enumerable: true,
+      writable: true,
+      value,
+    });
+    return;
+  }
+
+  target[key] = value;
 }

@@ -73,6 +73,7 @@ interface ExecutionContext<TTypes extends NodeTypeMap> {
   readonly overlay: OverlayState<TTypes>;
   readonly siblingOrders: Map<NodeId, MutableSiblingOrder>;
   readonly ownedAttrContainers: WeakSet<object>;
+  readonly ownedNodes: WeakSet<object>;
 }
 
 interface MutableSiblingOrder {
@@ -85,11 +86,41 @@ interface MutableSiblingOrder {
 
 type OperationResult = { ok: true } | { ok: false; conflict: PatchConflict };
 
+function sessionContext<TTypes extends NodeTypeMap>(
+  session: PatchExecutionSession<TTypes>,
+): ExecutionContext<TTypes> {
+  return {
+    overlay: session.overlay,
+    siblingOrders: session.siblingOrders,
+    ownedAttrContainers: session.ownedAttrContainers,
+    ownedNodes: session.ownedNodes,
+  };
+}
+
+function commitNodeAttrs<TTypes extends NodeTypeMap>(
+  context: ExecutionContext<TTypes>,
+  node: IndexedNode<TTypes>,
+  attrs: IndexedNode<TTypes>["attrs"],
+): void {
+  if (context.ownedNodes.has(node)) {
+    (node as { attrs: IndexedNode<TTypes>["attrs"] }).attrs = attrs;
+    return;
+  }
+
+  const draft = {
+    ...node,
+    attrs,
+  } as IndexedNode<TTypes>;
+  context.ownedNodes.add(draft);
+  setNode(context.overlay, draft);
+}
+
 export interface PatchExecutionSession<TTypes extends NodeTypeMap> {
   readonly overlay: OverlayState<TTypes>;
   readonly tree: IndexedTree<TTypes>;
   readonly siblingOrders: Map<NodeId, MutableSiblingOrder>;
   readonly ownedAttrContainers: WeakSet<object>;
+  readonly ownedNodes: WeakSet<object>;
 }
 
 export interface SessionNodePosition {
@@ -303,11 +334,7 @@ function flushSiblingOrders<TTypes extends NodeTypeMap>(
 export function flushPatchExecutionSession<TTypes extends NodeTypeMap>(
   session: PatchExecutionSession<TTypes>,
 ): void {
-  flushSiblingOrders({
-    overlay: session.overlay,
-    siblingOrders: session.siblingOrders,
-    ownedAttrContainers: session.ownedAttrContainers,
-  });
+  flushSiblingOrders(sessionContext(session));
 }
 
 export function getSessionNodePosition<TTypes extends NodeTypeMap>(
@@ -318,11 +345,7 @@ export function getSessionNodePosition<TTypes extends NodeTypeMap>(
   if (parentId == null) {
     return undefined;
   }
-  const order = getSiblingOrder({
-    overlay: session.overlay,
-    siblingOrders: session.siblingOrders,
-    ownedAttrContainers: session.ownedAttrContainers,
-  }, parentId);
+  const order = getSiblingOrder(sessionContext(session), parentId);
   if (!order.previous.has(nodeId) || !order.next.has(nodeId)) {
     return undefined;
   }
@@ -1324,10 +1347,11 @@ function applySetAttr<TTypes extends NodeTypeMap>(
     };
   }
 
-  setNode(context.overlay, {
-    ...node,
-    attrs: result.next as IndexedNode<TTypes>["attrs"],
-  });
+  commitNodeAttrs(
+    context,
+    node,
+    result.next as IndexedNode<TTypes>["attrs"],
+  );
   invalidateNodeCaches(context.overlay, op.nodeId);
   return { ok: true };
 }
@@ -1368,10 +1392,11 @@ function applyRemoveAttr<TTypes extends NodeTypeMap>(
     };
   }
 
-  setNode(context.overlay, {
-    ...node,
-    attrs: result.next as IndexedNode<TTypes>["attrs"],
-  });
+  commitNodeAttrs(
+    context,
+    node,
+    result.next as IndexedNode<TTypes>["attrs"],
+  );
   invalidateNodeCaches(context.overlay, op.nodeId);
   return { ok: true };
 }
@@ -2016,6 +2041,7 @@ export function createPatchExecutionSession<TTypes extends NodeTypeMap>(
     tree: overlay.treeView,
     siblingOrders: new Map(),
     ownedAttrContainers: new WeakSet(),
+    ownedNodes: new WeakSet(),
   };
 }
 
@@ -2023,12 +2049,7 @@ export function applyOperationInSession<TTypes extends NodeTypeMap>(
   session: PatchExecutionSession<TTypes>,
   op: PatchOp,
 ): OperationResult {
-  const context = {
-    overlay: session.overlay,
-    siblingOrders: session.siblingOrders,
-    ownedAttrContainers: session.ownedAttrContainers,
-  };
-  return applyOperation(context, op);
+  return applyOperation(sessionContext(session), op);
 }
 
 function freezeNodeForSnapshot<TTypes extends NodeTypeMap>(
@@ -2117,6 +2138,55 @@ function buildSnapshotFromOverlay<TTypes extends NodeTypeMap>(
   return Object.freeze(tree);
 }
 
+function materializeNode<TTypes extends NodeTypeMap>(
+  state: ReturnType<typeof getTreeState<TTypes>>,
+  node: IndexedNode<TTypes>,
+  children: Array<MaterializedNode<TTypes>>,
+  hidden: boolean,
+  explicitlyHidden: boolean,
+): MaterializedNode<TTypes> {
+  const patchOwned = state.patchOwned.has(node.id);
+  const materialized: MaterializedNode<TTypes> = {
+    id: node.id,
+    type: node.type,
+    attrs: exposeRuntimeAttrs(
+      state.schema,
+      state.ownership,
+      String(node.type),
+      node.attrs,
+    ) as MaterializedNode<TTypes>["attrs"],
+    children,
+  };
+
+  if (hidden || patchOwned || explicitlyHidden) {
+    materialized.state = {
+      ...(hidden ? { hidden: true } : {}),
+      ...(patchOwned ? { patchOwned: true } : {}),
+      ...(explicitlyHidden ? { explicitlyHidden: true } : {}),
+    };
+  }
+
+  return materialized;
+}
+
+function compactMaterializedChildren<TTypes extends NodeTypeMap>(
+  children: Array<MaterializedNode<TTypes> | null>,
+  hasNullChild: boolean,
+): Array<MaterializedNode<TTypes>> {
+  if (!hasNullChild) {
+    return children as Array<MaterializedNode<TTypes>>;
+  }
+
+  const compacted: Array<MaterializedNode<TTypes>> = [];
+  for (let index = 0; index < children.length; index += 1) {
+    const child = children[index];
+    if (child != null) {
+      compacted.push(child);
+    }
+  }
+  return compacted;
+}
+
 function buildMaterializedTree<TTypes extends NodeTypeMap>(
   tree: IndexedTree<TTypes>,
   nodeId: NodeId,
@@ -2138,6 +2208,7 @@ function buildMaterializedTree<TTypes extends NodeTypeMap>(
         hidden: boolean;
         explicitlyHidden: boolean;
         children: Array<MaterializedNode<TTypes> | null>;
+        hasNullChild: boolean;
         assign: (node: MaterializedNode<TTypes>) => void;
       };
   const stack: Frame[] = [{
@@ -2152,29 +2223,13 @@ function buildMaterializedTree<TTypes extends NodeTypeMap>(
   while (stack.length > 0) {
     const frame = stack.pop()!;
     if (frame.kind === "exit") {
-      const materializedState: MaterializedNode<TTypes>["state"] = {
-        ...(frame.hidden ? { hidden: true } : {}),
-        ...(state.patchOwned.has(frame.node.id) ? { patchOwned: true } : {}),
-        ...(frame.explicitlyHidden ? { explicitlyHidden: true } : {}),
-      };
-
-      const materialized: MaterializedNode<TTypes> = {
-        id: frame.node.id,
-        type: frame.node.type,
-        attrs: exposeRuntimeAttrs(
-          state.schema,
-          state.ownership,
-          String(frame.node.type),
-          frame.node.attrs,
-        ) as MaterializedNode<TTypes>["attrs"],
-        children: frame.children.filter(
-          (child): child is MaterializedNode<TTypes> => child !== null,
-        ),
-        ...(Object.keys(materializedState).length > 0
-          ? { state: materializedState }
-          : {}),
-      };
-      frame.assign(materialized);
+      frame.assign(materializeNode(
+        state,
+        frame.node,
+        compactMaterializedChildren(frame.children, frame.hasNullChild),
+        frame.hidden,
+        frame.explicitlyHidden,
+      ));
       continue;
     }
 
@@ -2190,23 +2245,33 @@ function buildMaterializedTree<TTypes extends NodeTypeMap>(
       continue;
     }
 
+    if (node.childIds.length === 0) {
+      frame.assign(materializeNode(state, node, [], hidden, explicitlyHidden));
+      continue;
+    }
+
     const children = new Array<MaterializedNode<TTypes> | null>(
       node.childIds.length,
-    ).fill(null);
-    stack.push({
+    );
+    const exitFrame: Extract<Frame, { kind: "exit" }> = {
       kind: "exit",
       node,
       hidden,
       explicitlyHidden,
       children,
+      hasNullChild: false,
       assign: frame.assign as (node: MaterializedNode<TTypes>) => void,
-    });
+    };
+    stack.push(exitFrame);
     for (let index = node.childIds.length - 1; index >= 0; index -= 1) {
       stack.push({
         kind: "enter",
         nodeId: node.childIds[index]!,
         ancestorHidden: hidden,
         assign: (child) => {
+          if (child === null) {
+            exitFrame.hasNullChild = true;
+          }
           children[index] = child;
         },
       });
@@ -2230,11 +2295,7 @@ export function executePatchInternal<TTypes extends NodeTypeMap>(
   }
 
   const session = createPatchExecutionSession(source);
-  const context: ExecutionContext<TTypes> = {
-    overlay: session.overlay,
-    siblingOrders: session.siblingOrders,
-    ownedAttrContainers: session.ownedAttrContainers,
-  };
+  const context = sessionContext(session);
   const conflicts: PatchConflict[] = [];
   const appliedOps: PatchOp[] = [];
   const appliedOpIds: string[] = [];

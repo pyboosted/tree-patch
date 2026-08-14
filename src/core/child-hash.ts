@@ -13,9 +13,17 @@ const LANE_SEEDS = [
   0xc2b2ae35,
   0x27d4eb2f,
 ] as const;
+const HEX_BYTE = Array.from({ length: 256 }, (_, value) =>
+  value.toString(16).padStart(2, "0"),
+);
 
 function toHex32(value: number): string {
-  return (value >>> 0).toString(16).padStart(LANE_HEX_LENGTH, "0");
+  return (
+    HEX_BYTE[(value >>> 24) & 0xff]! +
+    HEX_BYTE[(value >>> 16) & 0xff]! +
+    HEX_BYTE[(value >>> 8) & 0xff]! +
+    HEX_BYTE[value & 0xff]!
+  );
 }
 
 function mix32(value: number): number {
@@ -25,21 +33,64 @@ function mix32(value: number): number {
   return (mixed ^ (mixed >>> 16)) >>> 0;
 }
 
-function hashLane(hash: string, lane: number): number {
-  const versionPrefix = /^h\d+:/.exec(hash)?.[0].length ?? 0;
-  const offset =
-    versionPrefix +
-    lane * LANE_HEX_LENGTH;
-  const parsed = Number.parseInt(
-    hash.slice(offset, offset + LANE_HEX_LENGTH),
-    16,
-  );
-  return Number.isNaN(parsed) ? mix32(hash.length + lane) : parsed >>> 0;
+function versionPrefixLength(hash: string): number {
+  if (hash.charCodeAt(0) !== 104 /* h */) {
+    return 0;
+  }
+
+  let index = 1;
+  const length = hash.length;
+  while (index < length) {
+    const code = hash.charCodeAt(index);
+    if (code < 48 || code > 57) {
+      break;
+    }
+    index += 1;
+  }
+
+  return hash.charCodeAt(index) === 58 /* : */ ? index + 1 : 0;
 }
 
-function contribution(hash: string, index: number, lane: number): number {
+function parseHex8(hash: string, offset: number): number {
+  let value = 0;
+  for (let index = 0; index < LANE_HEX_LENGTH; index += 1) {
+    const code = hash.charCodeAt(offset + index);
+    const digit = code <= 57 ? code - 48 : (code | 32) - 87;
+    if (digit < 0 || digit > 15) {
+      return Number.NaN;
+    }
+    value = (value << 4) | digit;
+  }
+  return value >>> 0;
+}
+
+function hashLaneValue(hash: string, offset: number, lane: number): number {
+  const parsed = parseHex8(hash, offset + lane * LANE_HEX_LENGTH);
+  return Number.isNaN(parsed) ? mix32(hash.length + lane) : parsed;
+}
+
+function contributionFromLane(
+  laneValue: number,
+  index: number,
+  lane: number,
+): number {
   const weight = mix32(index + LANE_SEEDS[lane]!) | 1;
-  return Math.imul(hashLane(hash, lane) ^ LANE_SEEDS[lane]!, weight) >>> 0;
+  return Math.imul(laneValue ^ LANE_SEEDS[lane]!, weight) >>> 0;
+}
+
+function addHashContribution(
+  lanes: number[],
+  hash: string,
+  index: number,
+  sign: 1 | -1,
+): void {
+  const offset = versionPrefixLength(hash);
+  for (let lane = 0; lane < HASH_LANES; lane += 1) {
+    lanes[lane] = (
+      lanes[lane]! +
+      sign * contributionFromLane(hashLaneValue(hash, offset, lane), index, lane)
+    ) >>> 0;
+  }
 }
 
 export class ChildHashAggregate {
@@ -60,12 +111,7 @@ export class ChildHashAggregate {
   ): ChildHashAggregate {
     const lanes = new Array<number>(HASH_LANES).fill(0);
     for (let index = 0; index < childHashes.length; index += 1) {
-      const hash = childHashes[index]!;
-      for (let lane = 0; lane < HASH_LANES; lane += 1) {
-        lanes[lane] = (
-          lanes[lane]! + contribution(hash, index, lane)
-        ) >>> 0;
-      }
+      addHashContribution(lanes, childHashes[index]!, index, 1);
     }
     return new ChildHashAggregate(
       childIds,
@@ -98,18 +144,18 @@ export class ChildHashAggregate {
       return;
     }
 
-    for (let lane = 0; lane < HASH_LANES; lane += 1) {
-      this.lanes[lane] = (
-        this.lanes[lane]! -
-        contribution(previous, index, lane) +
-        contribution(hash, index, lane)
-      ) >>> 0;
-    }
+    addHashContribution(this.lanes, previous, index, -1);
+    addHashContribution(this.lanes, hash, index, 1);
     this.updates.set(index, hash);
     this.updates = finalizeMap(this.updates);
   }
 
   digest(): string {
-    return this.lanes.map(toHex32).join("");
+    return (
+      toHex32(this.lanes[0]!) +
+      toHex32(this.lanes[1]!) +
+      toHex32(this.lanes[2]!) +
+      toHex32(this.lanes[3]!)
+    );
   }
 }

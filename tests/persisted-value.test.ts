@@ -8,6 +8,10 @@ import {
   MissingCodecError,
   UnsupportedRuntimeValueError,
 } from "../src/index.js";
+import {
+  canonicalizeJsonValue,
+  cloneJsonValue,
+} from "../src/schema/adapters.js";
 
 const dateCodec = {
   codecId: "date",
@@ -37,6 +41,19 @@ test("default JSON adapter uses deterministic equality, hashing, and cloning", (
   const clone = defaultJsonValueAdapter.clone?.(left);
   assert.deepEqual(clone, left);
   assert.notEqual(clone, left);
+});
+
+test("primitive JSON arrays canonicalize and clone through the native fast path", () => {
+  const values = [0, -0, 1e21, 1.5, true, false, null, "a/b", ""];
+  assert.equal(canonicalizeJsonValue(values), JSON.stringify(values));
+  assert.equal(
+    canonicalizeJsonValue({ values }),
+    `{"values":${JSON.stringify(values)}}`,
+  );
+
+  const cloned = cloneJsonValue(values);
+  assert.deepEqual(cloned, values);
+  assert.notEqual(cloned, values);
 });
 
 test("persisted values pass JSON through and use codecs for non-JSON values", () => {

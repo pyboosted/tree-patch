@@ -1,5 +1,14 @@
+const HEX_BYTE = Array.from({ length: 256 }, (_, value) =>
+  value.toString(16).padStart(2, "0"),
+);
+
 function toHex32(value: number): string {
-  return (value >>> 0).toString(16).padStart(8, "0");
+  return (
+    HEX_BYTE[(value >>> 24) & 0xff]! +
+    HEX_BYTE[(value >>> 16) & 0xff]! +
+    HEX_BYTE[(value >>> 8) & 0xff]! +
+    HEX_BYTE[value & 0xff]!
+  );
 }
 
 class StableStringHasher {
@@ -9,13 +18,69 @@ class StableStringHasher {
   private h4 = 2773480762;
 
   update(input: string): void {
-    for (let index = 0; index < input.length; index += 1) {
-      const code = input.charCodeAt(index);
-      this.h1 = this.h2 ^ Math.imul(this.h1 ^ code, 597399067);
-      this.h2 = this.h3 ^ Math.imul(this.h2 ^ code, 2869860233);
-      this.h3 = this.h4 ^ Math.imul(this.h3 ^ code, 951274213);
-      this.h4 = this.h1 ^ Math.imul(this.h4 ^ code, 2716044179);
+    const length = input.length;
+    let index = 0;
+    let h1 = this.h1;
+    let h2 = this.h2;
+    let h3 = this.h3;
+    let h4 = this.h4;
+    const unrolledLimit = length - 7;
+
+    for (; index < unrolledLimit; index += 8) {
+      let code = input.charCodeAt(index);
+      h1 = h2 ^ Math.imul(h1 ^ code, 597399067);
+      h2 = h3 ^ Math.imul(h2 ^ code, 2869860233);
+      h3 = h4 ^ Math.imul(h3 ^ code, 951274213);
+      h4 = h1 ^ Math.imul(h4 ^ code, 2716044179);
+      code = input.charCodeAt(index + 1);
+      h1 = h2 ^ Math.imul(h1 ^ code, 597399067);
+      h2 = h3 ^ Math.imul(h2 ^ code, 2869860233);
+      h3 = h4 ^ Math.imul(h3 ^ code, 951274213);
+      h4 = h1 ^ Math.imul(h4 ^ code, 2716044179);
+      code = input.charCodeAt(index + 2);
+      h1 = h2 ^ Math.imul(h1 ^ code, 597399067);
+      h2 = h3 ^ Math.imul(h2 ^ code, 2869860233);
+      h3 = h4 ^ Math.imul(h3 ^ code, 951274213);
+      h4 = h1 ^ Math.imul(h4 ^ code, 2716044179);
+      code = input.charCodeAt(index + 3);
+      h1 = h2 ^ Math.imul(h1 ^ code, 597399067);
+      h2 = h3 ^ Math.imul(h2 ^ code, 2869860233);
+      h3 = h4 ^ Math.imul(h3 ^ code, 951274213);
+      h4 = h1 ^ Math.imul(h4 ^ code, 2716044179);
+      code = input.charCodeAt(index + 4);
+      h1 = h2 ^ Math.imul(h1 ^ code, 597399067);
+      h2 = h3 ^ Math.imul(h2 ^ code, 2869860233);
+      h3 = h4 ^ Math.imul(h3 ^ code, 951274213);
+      h4 = h1 ^ Math.imul(h4 ^ code, 2716044179);
+      code = input.charCodeAt(index + 5);
+      h1 = h2 ^ Math.imul(h1 ^ code, 597399067);
+      h2 = h3 ^ Math.imul(h2 ^ code, 2869860233);
+      h3 = h4 ^ Math.imul(h3 ^ code, 951274213);
+      h4 = h1 ^ Math.imul(h4 ^ code, 2716044179);
+      code = input.charCodeAt(index + 6);
+      h1 = h2 ^ Math.imul(h1 ^ code, 597399067);
+      h2 = h3 ^ Math.imul(h2 ^ code, 2869860233);
+      h3 = h4 ^ Math.imul(h3 ^ code, 951274213);
+      h4 = h1 ^ Math.imul(h4 ^ code, 2716044179);
+      code = input.charCodeAt(index + 7);
+      h1 = h2 ^ Math.imul(h1 ^ code, 597399067);
+      h2 = h3 ^ Math.imul(h2 ^ code, 2869860233);
+      h3 = h4 ^ Math.imul(h3 ^ code, 951274213);
+      h4 = h1 ^ Math.imul(h4 ^ code, 2716044179);
     }
+
+    for (; index < length; index += 1) {
+      const code = input.charCodeAt(index);
+      h1 = h2 ^ Math.imul(h1 ^ code, 597399067);
+      h2 = h3 ^ Math.imul(h2 ^ code, 2869860233);
+      h3 = h4 ^ Math.imul(h3 ^ code, 951274213);
+      h4 = h1 ^ Math.imul(h4 ^ code, 2716044179);
+    }
+
+    this.h1 = h1;
+    this.h2 = h2;
+    this.h3 = h3;
+    this.h4 = h4;
   }
 
   digestHex(): string {
