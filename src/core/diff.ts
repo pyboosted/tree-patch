@@ -104,6 +104,10 @@ function analyzeSharedNodes<TTypes extends NodeTypeMap>(
   let sameStructure = base.nodes.size === target.nodes.size;
   const typeChangedIds: NodeId[] = [];
   const attrOps: Array<SetAttrOp | RemoveAttrOp> = [];
+  const baseSubtreeHashes = getTreeState(base).cache.subtreeHashById;
+  const targetSubtreeHashes = getTreeState(target).cache.subtreeHashById;
+  const baseNodeHashes = getTreeState(base).cache.nodeHashById;
+  const targetNodeHashes = getTreeState(target).cache.nodeHashById;
 
   for (const [nodeId, baseNode] of base.nodes) {
     const targetNode = target.nodes.get(nodeId);
@@ -128,7 +132,11 @@ function analyzeSharedNodes<TTypes extends NodeTypeMap>(
       continue;
     }
 
-    if (getSubtreeHash(base, nodeId) === getSubtreeHash(target, nodeId)) {
+    const baseSubtreeHash =
+      baseSubtreeHashes.get(nodeId) ?? getSubtreeHash(base, nodeId);
+    const targetSubtreeHash =
+      targetSubtreeHashes.get(nodeId) ?? getSubtreeHash(target, nodeId);
+    if (baseSubtreeHash === targetSubtreeHash) {
       continue;
     }
 
@@ -136,7 +144,8 @@ function analyzeSharedNodes<TTypes extends NodeTypeMap>(
       context.semanticComparisonNodeTypes.has(String(baseNode.type));
     if (
       requiresSemanticComparison ||
-      getNodeHash(base, nodeId) !== getNodeHash(target, nodeId)
+      (baseNodeHashes.get(nodeId) ?? getNodeHash(base, nodeId)) !==
+        (targetNodeHashes.get(nodeId) ?? getNodeHash(target, nodeId))
     ) {
       collectAttrOpsForNode(
         context,

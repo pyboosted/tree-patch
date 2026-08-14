@@ -113,19 +113,27 @@ export function normalizePosition(
     });
   }
 
-  const entries = Object.entries(position as Record<string, unknown>).filter(
-    ([, value]) => value !== undefined,
-  );
-  if (entries.length !== 1) {
+  const record = position as Record<string, unknown>;
+  let key: string | undefined;
+  let value: unknown;
+  let definedCount = 0;
+  for (const candidate of Object.keys(record)) {
+    const candidateValue = record[candidate];
+    if (candidateValue === undefined) {
+      continue;
+    }
+    definedCount += 1;
+    key = candidate;
+    value = candidateValue;
+  }
+  if (definedCount !== 1 || key === undefined) {
     throw new AmbiguousPositionError(
       `${location} must contain exactly one of beforeId, afterId, atStart, or atEnd.`,
       {
-        details: { location, providedKeys: Object.keys(position as Record<string, unknown>) },
+        details: { location, providedKeys: Object.keys(record) },
       },
     );
   }
-
-  const [key, value] = entries[0]!;
   switch (key) {
     case "beforeId":
       if (typeof value !== "string") {

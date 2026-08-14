@@ -65,7 +65,21 @@ function cloneMetadata(
   return deepFreezePlainData(cloned.value as JsonObject);
 }
 
-function assertNodeEnvelope(node: unknown, location: string, isRoot: boolean): asserts node is {
+function describeNodeLocation(
+  parentId: string | null,
+  position: number,
+): string {
+  return parentId === null
+    ? "root"
+    : `child ${position} of node "${parentId}"`;
+}
+
+function assertNodeEnvelope(
+  node: unknown,
+  parentId: string | null,
+  position: number,
+  isRoot: boolean,
+): asserts node is {
   [key: string]: unknown;
   id: string;
   type: string;
@@ -75,39 +89,57 @@ function assertNodeEnvelope(node: unknown, location: string, isRoot: boolean): a
   if (!node || typeof node !== "object" || Array.isArray(node)) {
     throw isRoot
       ? new InvalidRootError("Document root must be a node object.")
-      : new MalformedTreeError(`Node at ${location} must be an object.`);
+      : new MalformedTreeError(
+          `Node at ${describeNodeLocation(parentId, position)} must be an object.`,
+        );
   }
 
   const candidate = node as Record<string, unknown>;
-  const keys = Object.keys(candidate);
-  for (const requiredKey of NODE_ENVELOPE_KEYS) {
-    if (!Object.hasOwn(candidate, requiredKey)) {
+  const wellFormedEnvelope =
+    Object.keys(candidate).length === 4 &&
+    Object.hasOwn(candidate, "id") &&
+    Object.hasOwn(candidate, "type") &&
+    Object.hasOwn(candidate, "attrs") &&
+    Object.hasOwn(candidate, "children");
+  if (!wellFormedEnvelope) {
+    const location = describeNodeLocation(parentId, position);
+    for (const requiredKey of NODE_ENVELOPE_KEYS) {
+      if (!Object.hasOwn(candidate, requiredKey)) {
+        throw new MalformedTreeError(
+          `Node at ${location} is missing required key "${requiredKey}".`,
+        );
+      }
+    }
+
+    const extraKeys = Object.keys(candidate).filter(
+      (key) => !NODE_ENVELOPE_KEYS.has(key),
+    );
+    if (extraKeys.length > 0) {
       throw new MalformedTreeError(
-        `Node at ${location} is missing required key "${requiredKey}".`,
+        `Node at ${location} contains unsupported envelope keys: ${extraKeys.join(", ")}.`,
+        {
+          details: { location, extraKeys },
+        },
       );
     }
   }
 
-  const extraKeys = keys.filter((key) => !NODE_ENVELOPE_KEYS.has(key));
-  if (extraKeys.length > 0) {
+  if (typeof candidate.id !== "string") {
     throw new MalformedTreeError(
-      `Node at ${location} contains unsupported envelope keys: ${extraKeys.join(", ")}.`,
-      {
-        details: { location, extraKeys },
-      },
+      `Node at ${describeNodeLocation(parentId, position)} must have a string id.`,
     );
   }
 
-  if (typeof candidate.id !== "string") {
-    throw new MalformedTreeError(`Node at ${location} must have a string id.`);
-  }
-
   if (typeof candidate.type !== "string") {
-    throw new MalformedTreeError(`Node at ${location} must have a string type.`);
+    throw new MalformedTreeError(
+      `Node at ${describeNodeLocation(parentId, position)} must have a string type.`,
+    );
   }
 
   if (!Array.isArray(candidate.children)) {
-    throw new MalformedTreeError(`Node at ${location} must provide a children array.`);
+    throw new MalformedTreeError(
+      `Node at ${describeNodeLocation(parentId, position)} must provide a children array.`,
+    );
   }
 }
 
@@ -154,9 +186,8 @@ export function createDocument<TTypes extends NodeTypeMap>(
         parentId: string | null;
         position: number;
         depth: number;
-        location: string;
         isRoot: boolean;
-        complete: (nodeId: string) => void;
+        parentChildIds: string[] | null;
       }
     | {
         kind: "exit";
@@ -171,7 +202,7 @@ export function createDocument<TTypes extends NodeTypeMap>(
         position: number;
         depth: number;
         childIds: string[];
-        complete: (nodeId: string) => void;
+        parentChildIds: string[] | null;
       };
 
   let rootId = "";
@@ -181,11 +212,8 @@ export function createDocument<TTypes extends NodeTypeMap>(
     parentId: null,
     position: 0,
     depth: 0,
-    location: "root",
     isRoot: true,
-    complete: (nodeId) => {
-      rootId = nodeId;
-    },
+    parentChildIds: null,
   }];
 
   while (stack.length > 0) {
@@ -208,16 +236,21 @@ export function createDocument<TTypes extends NodeTypeMap>(
       positionById.set(frame.node.id, frame.position);
       depthById.set(frame.node.id, frame.depth);
       activeNodeObjects.delete(frame.runtimeNodeObject);
-      frame.complete(frame.node.id);
+      if (frame.parentChildIds === null) {
+        rootId = frame.node.id;
+      } else {
+        frame.parentChildIds[frame.position] = frame.node.id;
+      }
       continue;
     }
 
-    assertNodeEnvelope(frame.node, frame.location, frame.isRoot);
+    assertNodeEnvelope(frame.node, frame.parentId, frame.position, frame.isRoot);
     const runtimeNodeObject = frame.node as object;
     if (activeNodeObjects.has(runtimeNodeObject)) {
+      const location = describeNodeLocation(frame.parentId, frame.position);
       throw new MalformedTreeError(
-        `Cycle detected while visiting node at ${frame.location}.`,
-        { details: { location: frame.location } },
+        `Cycle detected while visiting node at ${location}.`,
+        { details: { location } },
       );
     }
     if (seenNodeIds.has(frame.node.id)) {
@@ -235,7 +268,7 @@ export function createDocument<TTypes extends NodeTypeMap>(
       position: frame.position,
       depth: frame.depth,
       childIds,
-      complete: frame.complete,
+      parentChildIds: frame.parentChildIds,
     });
     for (let index = frame.node.children.length - 1; index >= 0; index -= 1) {
       stack.push({
@@ -244,11 +277,8 @@ export function createDocument<TTypes extends NodeTypeMap>(
         parentId: frame.node.id,
         position: index,
         depth: frame.depth + 1,
-        location: `child ${index} of node "${frame.node.id}"`,
         isRoot: false,
-        complete: (nodeId) => {
-          childIds[index] = nodeId;
-        },
+        parentChildIds: childIds,
       });
     }
   }

@@ -8,7 +8,7 @@ import type {
 import { ensureMutableMapValue } from "./cow.js";
 import { InvalidPointerError, UnsupportedRuntimeValueError } from "./errors.js";
 import { isPlainObject } from "./snapshot.js";
-import { getTreeState } from "./state.js";
+import { getTreeState, type MutableTreeState } from "./state.js";
 import { hashStableParts } from "./stable-hash.js";
 import { canonicalizeJsonValue, isJsonValue } from "../schema/adapters.js";
 import {
@@ -26,13 +26,15 @@ function versionHash(hash: string): string {
 }
 
 function canHashAsPlainJson(
-  tree: IndexedTree<NodeTypeMap>,
+  schema: MutableTreeState<NodeTypeMap>["schema"],
   nodeType: string,
   pointer: JsonPointer,
 ): boolean {
-  const spec = getNodeRuntimeSpec(getTreeState(tree).schema, nodeType);
+  const spec = getNodeRuntimeSpec(schema, nodeType);
+  if (pointer === "") {
+    return spec.atomicPointers.length === 0 && spec.adapters.size === 0;
+  }
   const containsPointer = (candidate: JsonPointer) =>
-    pointer === "" ||
     candidate === pointer ||
     candidate.startsWith(`${pointer}/`);
   if (spec.atomicPointers.some(containsPointer)) {
@@ -94,7 +96,7 @@ function hashStructuredValue(
   tree: IndexedTree<NodeTypeMap>,
 ): string {
   const state = getTreeState(tree);
-  if (canHashAsPlainJson(tree, nodeType, pointer)) {
+  if (canHashAsPlainJson(state.schema, nodeType, pointer)) {
     return versionHash(hashStableParts([
       "json",
       canonicalizeJsonValue(value as JsonValue),
@@ -221,10 +223,10 @@ function hashStructuredValue(
 }
 
 function getNodeOrThrow<TTypes extends NodeTypeMap>(
-  tree: IndexedTree<TTypes>,
+  state: MutableTreeState<TTypes>,
   nodeId: string,
 ) {
-  const node = getTreeState(tree).nodes.get(nodeId);
+  const node = state.nodes.get(nodeId);
   if (!node) {
     throw new InvalidPointerError(nodeId, `Node "${nodeId}" does not exist in the document.`);
   }
@@ -233,7 +235,7 @@ function getNodeOrThrow<TTypes extends NodeTypeMap>(
 }
 
 function getChildHashAggregate<TTypes extends NodeTypeMap>(
-  tree: IndexedTree<TTypes>,
+  state: MutableTreeState<TTypes>,
   nodeId: NodeId,
   childIds: readonly NodeId[],
 ): ChildHashAggregate | undefined {
@@ -241,41 +243,48 @@ function getChildHashAggregate<TTypes extends NodeTypeMap>(
     return undefined;
   }
 
-  const state = getTreeState(tree);
   const cached = state.cache.childHashByParentId.get(nodeId);
   if (cached?.matches(childIds)) {
     return cached;
   }
 
-  const childHashes = childIds.map((childId) => {
-    const childHash = state.cache.subtreeHashById.get(childId);
+  const subtreeHashes = state.cache.subtreeHashById;
+  const childHashes = new Array<string>(childIds.length);
+  for (let index = 0; index < childIds.length; index += 1) {
+    const childId = childIds[index]!;
+    const childHash = subtreeHashes.get(childId);
     if (!childHash) {
       throw new InvalidPointerError(
         childId,
         `Node "${childId}" cannot be aggregated before its subtree is hashed.`,
       );
     }
-    return childHash;
-  });
+    childHashes[index] = childHash;
+  }
   const aggregate = ChildHashAggregate.build(childIds, childHashes);
   state.cache.childHashByParentId.set(nodeId, aggregate);
   return aggregate;
 }
 
 function updateCachedParentAggregate<TTypes extends NodeTypeMap>(
-  tree: IndexedTree<TTypes>,
+  state: MutableTreeState<TTypes>,
   nodeId: NodeId,
   subtreeHash: string,
 ): void {
-  const state = getTreeState(tree);
   const parentId = state.index.parentById.get(nodeId);
   if (parentId == null) {
     return;
   }
 
-  const parent = state.nodes.get(parentId);
+  // During bulk bottom-up hashing no parent aggregate exists yet, so probe the
+  // (small) aggregate cache before touching the full node map.
   const cached = state.cache.childHashByParentId.get(parentId);
-  if (!parent || !cached?.matches(parent.childIds)) {
+  if (!cached) {
+    return;
+  }
+
+  const parent = state.nodes.get(parentId);
+  if (!parent || !cached.matches(parent.childIds)) {
     return;
   }
 
@@ -316,7 +325,7 @@ function hashRuntimeValueAtPointer<TTypes extends NodeTypeMap>(
   nodeId: string,
   pointer: JsonPointer,
 ): string {
-  const node = getNodeOrThrow(tree, nodeId);
+  const node = getNodeOrThrow(getTreeState(tree), nodeId);
   const resolution = resolvePointer(node.attrs, pointer);
   if (!resolution.ok) {
     throw new InvalidPointerError(
@@ -333,17 +342,17 @@ function hashRuntimeValueAtPointer<TTypes extends NodeTypeMap>(
   );
 }
 
-export function getNodeHash<TTypes extends NodeTypeMap>(
+function getNodeHashWithState<TTypes extends NodeTypeMap>(
   tree: IndexedTree<TTypes>,
+  state: MutableTreeState<TTypes>,
   nodeId: string,
 ): string {
-  const state = getTreeState(tree);
   const cached = state.cache.nodeHashById.get(nodeId);
   if (cached) {
     return cached;
   }
 
-  const node = getNodeOrThrow(tree, nodeId);
+  const node = getNodeOrThrow(state, nodeId);
   const attrsHash = hashStructuredValue(
     node.attrs,
     String(node.type),
@@ -357,51 +366,74 @@ export function getNodeHash<TTypes extends NodeTypeMap>(
   return nodeHash;
 }
 
+export function getNodeHash<TTypes extends NodeTypeMap>(
+  tree: IndexedTree<TTypes>,
+  nodeId: string,
+): string {
+  return getNodeHashWithState(tree, getTreeState(tree), nodeId);
+}
+
 export function getSubtreeHash<TTypes extends NodeTypeMap>(
   tree: IndexedTree<TTypes>,
   nodeId: string,
 ): string {
   const state = getTreeState(tree);
-  const cached = state.cache.subtreeHashById.get(nodeId);
+  const subtreeCache = state.cache.subtreeHashById;
+  const cached = subtreeCache.get(nodeId);
   if (cached) {
     return cached;
   }
 
-  const stack: Array<{ nodeId: string; exit?: true }> = [{ nodeId }];
+  // During a fully cold pass (plain-Map caches with no aggregates yet), no
+  // ancestor aggregate can exist while its descendants finalize (post-order),
+  // so parent-aggregate maintenance is guaranteed to be a no-op.
+  const aggregates = state.cache.childHashByParentId;
+  const maintainParentAggregates = !(
+    aggregates instanceof Map && aggregates.size === 0
+  );
+  type SubtreeFrame = {
+    nodeId: string;
+    node: ReturnType<typeof getNodeOrThrow<TTypes>> | null;
+    exit: boolean;
+  };
+  const stack: SubtreeFrame[] = [{ nodeId, node: null, exit: false }];
   while (stack.length > 0) {
     const frame = stack.pop()!;
-    if (state.cache.subtreeHashById.has(frame.nodeId)) {
-      continue;
-    }
-
-    const node = getNodeOrThrow(tree, frame.nodeId);
     if (frame.exit) {
+      const node = frame.node!;
       const childAggregate = getChildHashAggregate(
-        tree,
+        state,
         frame.nodeId,
         node.childIds,
       );
       const subtreeHash = versionHash(hashStableParts([
         "subtree",
-        getNodeHash(tree, frame.nodeId),
+        getNodeHashWithState(tree, state, frame.nodeId),
         String(node.childIds.length),
         childAggregate?.digest() ?? "",
       ]));
-      state.cache.subtreeHashById.set(frame.nodeId, subtreeHash);
-      updateCachedParentAggregate(tree, frame.nodeId, subtreeHash);
+      subtreeCache.set(frame.nodeId, subtreeHash);
+      if (maintainParentAggregates) {
+        updateCachedParentAggregate(state, frame.nodeId, subtreeHash);
+      }
       continue;
     }
 
-    stack.push({ nodeId: frame.nodeId, exit: true });
+    if (subtreeCache.has(frame.nodeId)) {
+      continue;
+    }
+
+    const node = getNodeOrThrow(state, frame.nodeId);
+    stack.push({ nodeId: frame.nodeId, node, exit: true });
     for (let index = node.childIds.length - 1; index >= 0; index -= 1) {
       const childId = node.childIds[index]!;
-      if (!state.cache.subtreeHashById.has(childId)) {
-        stack.push({ nodeId: childId });
+      if (!subtreeCache.has(childId)) {
+        stack.push({ nodeId: childId, node: null, exit: false });
       }
     }
   }
 
-  return state.cache.subtreeHashById.get(nodeId)!;
+  return subtreeCache.get(nodeId)!;
 }
 
 export function getTreeRevisionHash<TTypes extends NodeTypeMap>(

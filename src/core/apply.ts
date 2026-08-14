@@ -2144,8 +2144,8 @@ function materializeNode<TTypes extends NodeTypeMap>(
   children: Array<MaterializedNode<TTypes>>,
   hidden: boolean,
   explicitlyHidden: boolean,
+  patchOwned: boolean,
 ): MaterializedNode<TTypes> {
-  const patchOwned = state.patchOwned.has(node.id);
   const materialized: MaterializedNode<TTypes> = {
     id: node.id,
     type: node.type,
@@ -2194,73 +2194,102 @@ function buildMaterializedTree<TTypes extends NodeTypeMap>(
   ancestorHidden: boolean,
 ): MaterializedNode<TTypes> | null {
   const state = getTreeState(tree);
+  const nodes = state.nodes;
+  const explicitHiddenSet = state.explicitHidden;
+  const checkExplicitHidden = explicitHiddenSet.size > 0;
+  const patchOwnedSet = state.patchOwned;
+  const checkPatchOwned = patchOwnedSet.size > 0;
   let root: MaterializedNode<TTypes> | null = null;
-  type Frame =
-    | {
-        kind: "enter";
-        nodeId: NodeId;
-        ancestorHidden: boolean;
-        assign: (node: MaterializedNode<TTypes> | null) => void;
-      }
-    | {
-        kind: "exit";
-        node: IndexedNode<TTypes>;
-        hidden: boolean;
-        explicitlyHidden: boolean;
-        children: Array<MaterializedNode<TTypes> | null>;
-        hasNullChild: boolean;
-        assign: (node: MaterializedNode<TTypes>) => void;
-      };
-  const stack: Frame[] = [{
+  interface ExitFrame {
+    kind: "exit";
+    node: IndexedNode<TTypes>;
+    hidden: boolean;
+    explicitlyHidden: boolean;
+    children: Array<MaterializedNode<TTypes> | null>;
+    hasNullChild: boolean;
+    parent: ExitFrame | null;
+    parentIndex: number;
+  }
+  interface EnterFrame {
+    kind: "enter";
+    nodeId: NodeId;
+    ancestorHidden: boolean;
+    parent: ExitFrame | null;
+    parentIndex: number;
+  }
+  const assign = (
+    parent: ExitFrame | null,
+    parentIndex: number,
+    value: MaterializedNode<TTypes> | null,
+  ): void => {
+    if (parent === null) {
+      root = value;
+      return;
+    }
+    if (value === null) {
+      parent.hasNullChild = true;
+    }
+    parent.children[parentIndex] = value;
+  };
+  const stack: Array<EnterFrame | ExitFrame> = [{
     kind: "enter",
     nodeId,
     ancestorHidden,
-    assign: (node) => {
-      root = node;
-    },
+    parent: null,
+    parentIndex: 0,
   }];
 
   while (stack.length > 0) {
     const frame = stack.pop()!;
     if (frame.kind === "exit") {
-      frame.assign(materializeNode(
+      assign(frame.parent, frame.parentIndex, materializeNode(
         state,
         frame.node,
         compactMaterializedChildren(frame.children, frame.hasNullChild),
         frame.hidden,
         frame.explicitlyHidden,
+        checkPatchOwned && patchOwnedSet.has(frame.node.id),
       ));
       continue;
     }
 
-    const node = state.nodes.get(frame.nodeId);
+    const node = nodes.get(frame.nodeId);
     if (!node) {
-      frame.assign(null);
+      assign(frame.parent, frame.parentIndex, null);
       continue;
     }
-    const explicitlyHidden = state.explicitHidden.has(frame.nodeId);
+    const explicitlyHidden =
+      checkExplicitHidden && explicitHiddenSet.has(frame.nodeId);
     const hidden = frame.ancestorHidden || explicitlyHidden;
     if (hidden && !includeHidden) {
-      frame.assign(null);
+      assign(frame.parent, frame.parentIndex, null);
       continue;
     }
 
     if (node.childIds.length === 0) {
-      frame.assign(materializeNode(state, node, [], hidden, explicitlyHidden));
+      assign(frame.parent, frame.parentIndex, materializeNode(
+        state,
+        node,
+        [],
+        hidden,
+        explicitlyHidden,
+        checkPatchOwned && patchOwnedSet.has(node.id),
+      ));
       continue;
     }
 
     const children = new Array<MaterializedNode<TTypes> | null>(
       node.childIds.length,
     );
-    const exitFrame: Extract<Frame, { kind: "exit" }> = {
+    const exitFrame: ExitFrame = {
       kind: "exit",
       node,
       hidden,
       explicitlyHidden,
       children,
       hasNullChild: false,
-      assign: frame.assign as (node: MaterializedNode<TTypes>) => void,
+      parent: frame.parent,
+      parentIndex: frame.parentIndex,
     };
     stack.push(exitFrame);
     for (let index = node.childIds.length - 1; index >= 0; index -= 1) {
@@ -2268,12 +2297,8 @@ function buildMaterializedTree<TTypes extends NodeTypeMap>(
         kind: "enter",
         nodeId: node.childIds[index]!,
         ancestorHidden: hidden,
-        assign: (child) => {
-          if (child === null) {
-            exitFrame.hasNullChild = true;
-          }
-          children[index] = child;
-        },
+        parent: exitFrame,
+        parentIndex: index,
       });
     }
   }

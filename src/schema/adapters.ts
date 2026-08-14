@@ -47,6 +47,23 @@ function isPrimitiveJsonArray(value: unknown): value is JsonPrimitive[] {
   return true;
 }
 
+function primitiveObjectKeys(
+  value: unknown,
+): string[] | undefined {
+  if (!isPlainObject(value)) {
+    return undefined;
+  }
+
+  const keys = Object.keys(value);
+  for (let index = 0; index < keys.length; index += 1) {
+    if (!isJsonPrimitive(value[keys[index]!])) {
+      return undefined;
+    }
+  }
+
+  return keys;
+}
+
 export function isJsonValue(value: unknown): value is JsonValue {
   const active = new WeakSet<object>();
   const stack: Array<{ value: unknown; exit?: true }> = [{ value }];
@@ -101,6 +118,16 @@ export function tryCloneJsonValue(
   }
   if (isPrimitiveJsonArray(value)) {
     return { ok: true, value: value.slice() };
+  }
+  const flatKeys = primitiveObjectKeys(value);
+  if (flatKeys) {
+    const record = value as Record<string, JsonValue>;
+    const clone: Record<string, JsonValue> = {};
+    for (let index = 0; index < flatKeys.length; index += 1) {
+      const key = flatKeys[index]!;
+      setOwnEnumerableValue(clone, key, record[key]!);
+    }
+    return { ok: true, value: clone };
   }
 
   let root: JsonValue | undefined;
@@ -178,6 +205,20 @@ export function tryCloneJsonValue(
 export function canonicalizeJsonValue(value: JsonValue): string {
   if (isPrimitiveJsonArray(value)) {
     return JSON.stringify(value);
+  }
+  const flatKeys = primitiveObjectKeys(value);
+  if (flatKeys) {
+    const record = value as Record<string, JsonValue>;
+    flatKeys.sort();
+    let result = "{";
+    for (let index = 0; index < flatKeys.length; index += 1) {
+      const key = flatKeys[index]!;
+      if (index > 0) {
+        result += ",";
+      }
+      result += `${JSON.stringify(key)}:${JSON.stringify(record[key])}`;
+    }
+    return `${result}}`;
   }
 
   const chunks: string[] = [];

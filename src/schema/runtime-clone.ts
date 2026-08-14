@@ -9,12 +9,9 @@ import {
   setOwnEnumerableValue,
 } from "../core/snapshot.js";
 import { UnsupportedRuntimeValueError } from "../core/errors.js";
-import { cloneRuntimeValue } from "./adapters.js";
+import { cloneRuntimeValue, tryCloneJsonValue } from "./adapters.js";
 import type { CompiledTreeSchema } from "./schema.js";
-import {
-  getNodeRuntimeSpec,
-  getValueAdapterForPointer,
-} from "./schema.js";
+import { getNodeRuntimeSpec } from "./schema.js";
 
 function joinPointer(base: JsonPointer, segment: string | number): JsonPointer {
   const encoded = String(segment).replaceAll("~", "~0").replaceAll("/", "~1");
@@ -27,6 +24,16 @@ export function cloneRuntimeTreeValue<TTypes extends NodeTypeMap>(
   pointer: JsonPointer,
   value: unknown,
 ): unknown {
+  if (getNodeRuntimeSpec(schema, nodeType).adapters.size === 0) {
+    // Plain-JSON node types need no per-pointer adapter lookups; fall through
+    // to the pointer-tracking walk only to produce exact errors.
+    const fast = tryCloneJsonValue(value);
+    if (fast.ok) {
+      return fast.value;
+    }
+  }
+
+  const adapters = getNodeRuntimeSpec(schema, nodeType).adapters;
   let root: unknown;
   const active = new WeakSet<object>();
   type Frame =
@@ -53,7 +60,7 @@ export function cloneRuntimeTreeValue<TTypes extends NodeTypeMap>(
       continue;
     }
 
-    const adapter = getValueAdapterForPointer(schema, nodeType, frame.pointer);
+    const adapter = adapters.get(frame.pointer);
     if (adapter) {
       frame.assign(cloneRuntimeValue(frame.value, adapter, frame.pointer));
       continue;

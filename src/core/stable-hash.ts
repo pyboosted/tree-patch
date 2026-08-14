@@ -101,11 +101,21 @@ class StableStringHasher {
 export function hashStableParts(parts: Iterable<string>): string {
   const hasher = new StableStringHasher();
 
-  for (const part of parts) {
-    hasher.update(String(part.length));
-    hasher.update(":");
-    hasher.update(part);
-    hasher.update("|");
+  if (Array.isArray(parts)) {
+    for (let index = 0; index < parts.length; index += 1) {
+      const part = parts[index]!;
+      hasher.update(String(part.length));
+      hasher.update(":");
+      hasher.update(part);
+      hasher.update("|");
+    }
+  } else {
+    for (const part of parts) {
+      hasher.update(String(part.length));
+      hasher.update(":");
+      hasher.update(part);
+      hasher.update("|");
+    }
   }
 
   return hasher.digestHex();
