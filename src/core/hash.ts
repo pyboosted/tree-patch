@@ -226,12 +226,12 @@ function getNodeOrThrow<TTypes extends NodeTypeMap>(
   state: MutableTreeState<TTypes>,
   nodeId: string,
 ) {
-  const node = state.nodes.get(nodeId);
-  if (!node) {
+  const entry = state.entries.get(nodeId);
+  if (!entry) {
     throw new InvalidPointerError(nodeId, `Node "${nodeId}" does not exist in the document.`);
   }
 
-  return node;
+  return entry.node;
 }
 
 function getChildHashAggregate<TTypes extends NodeTypeMap>(
@@ -271,7 +271,8 @@ function updateCachedParentAggregate<TTypes extends NodeTypeMap>(
   nodeId: NodeId,
   subtreeHash: string,
 ): void {
-  const parentId = state.index.parentById.get(nodeId);
+  const entry = state.entries.get(nodeId);
+  const parentId = entry?.parentId;
   if (parentId == null) {
     return;
   }
@@ -283,14 +284,13 @@ function updateCachedParentAggregate<TTypes extends NodeTypeMap>(
     return;
   }
 
-  const parent = state.nodes.get(parentId);
+  const parent = state.entries.get(parentId)?.node;
   if (!parent || !cached.matches(parent.childIds)) {
     return;
   }
 
-  const position = state.index.positionById.get(nodeId);
+  const position = entry!.position;
   if (
-    position === undefined ||
     parent.childIds[position] !== nodeId ||
     cached.get(position) === subtreeHash
   ) {
@@ -430,7 +430,7 @@ export function getSubtreeHash<TTypes extends NodeTypeMap>(
       if (subtreeCache.has(childId)) {
         continue;
       }
-      const child = state.nodes.get(childId);
+      const child = state.entries.get(childId)?.node;
       if (child !== undefined && child.childIds.length === 0) {
         // Leaves have no aggregate; hash them in place without frames.
         const leafHash = versionHash(hashStableParts([

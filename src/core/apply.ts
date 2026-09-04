@@ -32,7 +32,14 @@ import {
   isPlainObject,
   setOwnEnumerableValue,
 } from "./snapshot.js";
-import { attachTreeState, getTreeState } from "./state.js";
+import {
+  attachTreeState,
+  ensureOwnedEntry,
+  getNodeEntry,
+  getTreeState,
+  setNodeEntry,
+  type NodeEntry,
+} from "./state.js";
 import {
   getChildOrderHash,
   getPathHash,
@@ -99,9 +106,10 @@ function sessionContext<TTypes extends NodeTypeMap>(
 
 function commitNodeAttrs<TTypes extends NodeTypeMap>(
   context: ExecutionContext<TTypes>,
-  node: IndexedNode<TTypes>,
+  entry: NodeEntry<TTypes>,
   attrs: IndexedNode<TTypes>["attrs"],
 ): void {
+  const node = entry.node;
   if (context.ownedNodes.has(node)) {
     (node as { attrs: IndexedNode<TTypes>["attrs"] }).attrs = attrs;
     return;
@@ -112,7 +120,7 @@ function commitNodeAttrs<TTypes extends NodeTypeMap>(
     attrs,
   } as IndexedNode<TTypes>;
   context.ownedNodes.add(draft);
-  setNode(context.overlay, draft);
+  ensureOwnedEntry(context.overlay, entry).node = draft;
 }
 
 export interface PatchExecutionSession<TTypes extends NodeTypeMap> {
@@ -324,9 +332,13 @@ function flushSiblingOrders<TTypes extends NodeTypeMap>(
       current = order.next.get(current) ?? null;
     }
     setParentChildIds(context.overlay, parentId, childIds);
-    childIds.forEach((childId, index) => {
-      context.overlay.index.positionById.set(childId, index);
-    });
+    const entries = context.overlay.entries;
+    for (let index = 0; index < childIds.length; index += 1) {
+      const entry = entries.get(childIds[index]!);
+      if (entry !== undefined && entry.position !== index) {
+        ensureOwnedEntry(context.overlay, entry).position = index;
+      }
+    }
     order.dirty = false;
   }
 }
@@ -1334,7 +1346,8 @@ function applySetAttr<TTypes extends NodeTypeMap>(
   context: ExecutionContext<TTypes>,
   op: SetAttrOp,
 ): OperationResult {
-  const node = getNode(context.overlay, op.nodeId);
+  const nodeEntry = getNodeEntry(context.overlay, op.nodeId);
+  const node = nodeEntry?.node;
   if (!node) {
     return {
       ok: false,
@@ -1376,7 +1389,7 @@ function applySetAttr<TTypes extends NodeTypeMap>(
 
   commitNodeAttrs(
     context,
-    node,
+    nodeEntry!,
     result.next as IndexedNode<TTypes>["attrs"],
   );
   invalidateNodeCaches(context.overlay, op.nodeId);
@@ -1387,7 +1400,8 @@ function applyRemoveAttr<TTypes extends NodeTypeMap>(
   context: ExecutionContext<TTypes>,
   op: RemoveAttrOp,
 ): OperationResult {
-  const node = getNode(context.overlay, op.nodeId);
+  const nodeEntry = getNodeEntry(context.overlay, op.nodeId);
+  const node = nodeEntry?.node;
   if (!node) {
     return {
       ok: false,
@@ -1421,7 +1435,7 @@ function applyRemoveAttr<TTypes extends NodeTypeMap>(
 
   commitNodeAttrs(
     context,
-    node,
+    nodeEntry!,
     result.next as IndexedNode<TTypes>["attrs"],
   );
   invalidateNodeCaches(context.overlay, op.nodeId);
@@ -1432,7 +1446,8 @@ function applyHideNode<TTypes extends NodeTypeMap>(
   context: ExecutionContext<TTypes>,
   op: Extract<PatchOp, { kind: "hideNode" }>,
 ): OperationResult {
-  const node = getNode(context.overlay, op.nodeId);
+  const nodeEntry = getNodeEntry(context.overlay, op.nodeId);
+  const node = nodeEntry?.node;
   if (!node) {
     return {
       ok: false,
@@ -1463,7 +1478,8 @@ function applyShowNode<TTypes extends NodeTypeMap>(
   context: ExecutionContext<TTypes>,
   op: Extract<PatchOp, { kind: "showNode" }>,
 ): OperationResult {
-  const node = getNode(context.overlay, op.nodeId);
+  const nodeEntry = getNodeEntry(context.overlay, op.nodeId);
+  const node = nodeEntry?.node;
   if (!node) {
     return {
       ok: false,
@@ -1631,16 +1647,11 @@ function applyInsertNode<TTypes extends NodeTypeMap>(
     0,
   );
 
-  normalized.nodes.forEach((node) => {
-    setNode(context.overlay, node);
+  normalized.nodes.forEach((node, index) => {
+    const entry = normalized.index[index]!;
+    setNodeEntry(context.overlay, node, entry.parentId, entry.position, entry.depth);
     context.overlay.dirtyNodeIds.add(node.id);
     context.overlay.patchOwned.add(node.id);
-  });
-
-  normalized.index.forEach((entry) => {
-    context.overlay.index.parentById.set(entry.nodeId, entry.parentId);
-    context.overlay.index.depthById.set(entry.nodeId, entry.depth);
-    context.overlay.index.positionById.set(entry.nodeId, entry.position);
   });
 
   linkSiblingAfter(
@@ -1791,7 +1802,10 @@ function applyMoveNode<TTypes extends NodeTypeMap>(
 
   unlinkSibling(currentOrder, op.nodeId);
   linkSiblingAfter(destinationOrder, op.nodeId, targetPrevious);
-  overlay.index.parentById.set(op.nodeId, newParent.id);
+  const movedEntry = getNodeEntry(overlay, op.nodeId);
+  if (movedEntry !== undefined) {
+    ensureOwnedEntry(overlay, movedEntry).parentId = newParent.id;
+  }
 
   if (currentParentId !== op.newParentId) {
     const nextDepth = (overlay.index.depthById.get(newParent.id) ?? 0) + 1;
@@ -1881,8 +1895,9 @@ function applyReplaceSubtree<TTypes extends NodeTypeMap>(
     position,
   );
 
-  normalized.nodes.forEach((node) => {
-    setNode(overlay, node);
+  normalized.nodes.forEach((node, index) => {
+    const entry = normalized.index[index]!;
+    setNodeEntry(overlay, node, entry.parentId, entry.position, entry.depth);
     overlay.dirtyNodeIds.add(node.id);
     if (node.id === op.nodeId) {
       if (rootWasPatchOwned) {
@@ -1901,12 +1916,6 @@ function applyReplaceSubtree<TTypes extends NodeTypeMap>(
 
     overlay.patchOwned.add(node.id);
     overlay.explicitHidden.delete(node.id);
-  });
-
-  normalized.index.forEach((entry) => {
-    overlay.index.parentById.set(entry.nodeId, entry.parentId);
-    overlay.index.depthById.set(entry.nodeId, entry.depth);
-    overlay.index.positionById.set(entry.nodeId, entry.position);
   });
 
   invalidateNodeCaches(overlay, op.nodeId);
@@ -2101,16 +2110,15 @@ function buildSnapshotFromOverlay<TTypes extends NodeTypeMap>(
   source: IndexedTree<TTypes>,
 ): IndexedTree<TTypes> {
   for (const nodeId of overlay.dirtyNodeIds) {
-    const node = overlay.nodes.get(nodeId);
-    if (node) {
-      overlay.nodes.set(nodeId, freezeNodeForSnapshot(overlay, node));
+    const entry = overlay.entries.get(nodeId);
+    if (entry) {
+      ensureOwnedEntry(overlay, entry).node = freezeNodeForSnapshot(overlay, entry.node);
     }
   }
 
-  overlay.nodes = finalizeMap(overlay.nodes);
-  overlay.index.parentById = finalizeMap(overlay.index.parentById);
-  overlay.index.positionById = finalizeMap(overlay.index.positionById);
-  overlay.index.depthById = finalizeMap(overlay.index.depthById);
+  overlay.entries = finalizeMap(overlay.entries);
+  // The snapshot is immutable from here on; later overlays copy on write.
+  overlay.entryOwner = null;
   overlay.cache.nodeHashById = finalizeMap(overlay.cache.nodeHashById);
   overlay.cache.subtreeHashById = finalizeMap(overlay.cache.subtreeHashById);
   overlay.cache.pathHashByNodeId = finalizeMap(overlay.cache.pathHashByNodeId);
@@ -2123,13 +2131,13 @@ function buildSnapshotFromOverlay<TTypes extends NodeTypeMap>(
   const tree = {
     rootId: overlay.rootId,
     nodes: createReadonlyMapView(
-      overlay.nodes,
-      (node) => exposeIndexedNode(overlay.schema, overlay.ownership, node),
+      overlay.entries,
+      (entry) => exposeIndexedNode(overlay.schema, overlay.ownership, entry.node),
     ),
     index: Object.freeze({
-      parentById: createReadonlyMapView(overlay.index.parentById),
-      positionById: createReadonlyMapView(overlay.index.positionById),
-      depthById: createReadonlyMapView(overlay.index.depthById),
+      parentById: createReadonlyMapView(overlay.entries, (entry) => entry.parentId),
+      positionById: createReadonlyMapView(overlay.entries, (entry) => entry.position),
+      depthById: createReadonlyMapView(overlay.entries, (entry) => entry.depth),
     }),
     cache: Object.freeze({
       nodeHashById: createReadonlyMapView(overlay.cache.nodeHashById),
@@ -2221,7 +2229,7 @@ function buildMaterializedTree<TTypes extends NodeTypeMap>(
   ancestorHidden: boolean,
 ): MaterializedNode<TTypes> | null {
   const state = getTreeState(tree);
-  const nodes = state.nodes;
+  const entries = state.entries;
   const explicitHiddenSet = state.explicitHidden;
   const checkExplicitHidden = explicitHiddenSet.size > 0;
   const patchOwnedSet = state.patchOwned;
@@ -2280,7 +2288,7 @@ function buildMaterializedTree<TTypes extends NodeTypeMap>(
       continue;
     }
 
-    const node = nodes.get(frame.nodeId);
+    const node = entries.get(frame.nodeId)?.node;
     if (!node) {
       assign(frame.parent, frame.parentIndex, null);
       continue;
@@ -2321,7 +2329,7 @@ function buildMaterializedTree<TTypes extends NodeTypeMap>(
     stack.push(exitFrame);
     for (let index = node.childIds.length - 1; index >= 0; index -= 1) {
       const childId = node.childIds[index]!;
-      const child = nodes.get(childId);
+      const child = entries.get(childId)?.node;
       if (child !== undefined && child.childIds.length === 0) {
         // Leaves are materialized in place; no frame round-trip needed.
         const childExplicitlyHidden =

@@ -9,7 +9,14 @@ import {
   createCopyOnWriteMap,
   createCopyOnWriteSet,
 } from "./cow.js";
-import { attachTreeState, getTreeState, type MutableTreeState } from "./state.js";
+import {
+  attachTreeState,
+  createTreeState,
+  ensureOwnedEntry,
+  getTreeState,
+  setNodeEntry,
+  type MutableTreeState,
+} from "./state.js";
 
 export interface OverlayState<TTypes extends NodeTypeMap> extends MutableTreeState<TTypes> {
   readonly rootId: NodeId;
@@ -24,15 +31,11 @@ export function createOverlayState<TTypes extends NodeTypeMap>(
   source: IndexedTree<TTypes>,
 ): OverlayState<TTypes> {
   const sourceState = getTreeState(source);
-  const state = {
+  const state = createTreeState({
     ownership: sourceState.ownership,
     schema: sourceState.schema,
-    nodes: createCopyOnWriteMap(sourceState.nodes),
-    index: {
-      parentById: createCopyOnWriteMap(sourceState.index.parentById),
-      positionById: createCopyOnWriteMap(sourceState.index.positionById),
-      depthById: createCopyOnWriteMap(sourceState.index.depthById),
-    },
+    entries: createCopyOnWriteMap(sourceState.entries),
+    entryOwner: {},
     cache: {
       nodeHashById: createCopyOnWriteMap(sourceState.cache.nodeHashById),
       subtreeHashById: createCopyOnWriteMap(sourceState.cache.subtreeHashById),
@@ -43,13 +46,15 @@ export function createOverlayState<TTypes extends NodeTypeMap>(
     } as MutableTreeState<TTypes>["cache"],
     explicitHidden: createCopyOnWriteSet(sourceState.explicitHidden),
     patchOwned: createCopyOnWriteSet(sourceState.patchOwned),
+  }) as OverlayState<TTypes>;
+  Object.assign(state, {
     rootId: source.rootId,
     metadata: source.metadata,
     treeView: undefined as unknown as IndexedTree<TTypes>,
     dirtyNodeIds: new Set<NodeId>(),
     dirtyPathHashNodeIds: new Set<NodeId>(),
     dirtySubtreeNodeIds: new Set<NodeId>(),
-  } as OverlayState<TTypes>;
+  });
 
   const treeView = {
     rootId: source.rootId,
@@ -118,22 +123,26 @@ export function getNode<TTypes extends NodeTypeMap>(
   overlay: OverlayState<TTypes>,
   nodeId: NodeId,
 ): IndexedNode<TTypes> | undefined {
-  return overlay.nodes.get(nodeId);
+  return overlay.entries.get(nodeId)?.node;
 }
 
 export function setNode<TTypes extends NodeTypeMap>(
   overlay: OverlayState<TTypes>,
   node: IndexedNode<TTypes>,
 ): void {
-  overlay.nodes.set(node.id, node);
+  const entry = overlay.entries.get(node.id);
+  if (entry === undefined) {
+    setNodeEntry(overlay, node, null, 0, 0);
+    return;
+  }
+  ensureOwnedEntry(overlay, entry).node = node;
 }
 
 export function getParentChildIds<TTypes extends NodeTypeMap>(
   overlay: OverlayState<TTypes>,
   parentId: NodeId,
 ): readonly NodeId[] {
-  const parent = overlay.nodes.get(parentId);
-  return parent?.childIds ?? [];
+  return overlay.entries.get(parentId)?.node.childIds ?? [];
 }
 
 export function reindexSubtreeDepths<TTypes extends NodeTypeMap>(
@@ -148,12 +157,14 @@ export function reindexSubtreeDepths<TTypes extends NodeTypeMap>(
   const stack: Array<{ nodeId: NodeId; depth: number }> = [{ nodeId, depth }];
   while (stack.length > 0) {
     const current = stack.pop()!;
-    overlay.index.depthById.set(current.nodeId, current.depth);
-    const node = overlay.nodes.get(current.nodeId);
-    if (!node) {
+    const entry = overlay.entries.get(current.nodeId);
+    if (!entry) {
       continue;
     }
-    const childIds = getChildIds(current.nodeId, node);
+    if (entry.depth !== current.depth) {
+      ensureOwnedEntry(overlay, entry).depth = current.depth;
+    }
+    const childIds = getChildIds(current.nodeId, entry.node);
     for (let index = childIds.length - 1; index >= 0; index -= 1) {
       stack.push({
         nodeId: childIds[index]!,
@@ -167,10 +178,7 @@ function clearNodeState<TTypes extends NodeTypeMap>(
   overlay: OverlayState<TTypes>,
   nodeId: NodeId,
 ): void {
-  overlay.nodes.delete(nodeId);
-  overlay.index.parentById.delete(nodeId);
-  overlay.index.positionById.delete(nodeId);
-  overlay.index.depthById.delete(nodeId);
+  overlay.entries.delete(nodeId);
   overlay.cache.nodeHashById.delete(nodeId);
   overlay.cache.subtreeHashById.delete(nodeId);
   overlay.cache.pathHashByNodeId.delete(nodeId);

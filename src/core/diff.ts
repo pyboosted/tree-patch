@@ -113,6 +113,8 @@ function analyzeSharedNodes<TTypes extends NodeTypeMap>(
   const targetSubtreeHashes = getTreeState(target).cache.subtreeHashById;
   const baseNodeHashes = getTreeState(base).cache.nodeHashById;
   const targetNodeHashes = getTreeState(target).cache.nodeHashById;
+  const baseEntries = getTreeState(base).entries;
+  const targetEntries = getTreeState(target).entries;
 
   // Walk the base tree top-down. Equal subtree hashes imply identical node
   // ids, order, types, and attrs below that node, so such subtrees are skipped
@@ -128,12 +130,12 @@ function analyzeSharedNodes<TTypes extends NodeTypeMap>(
       continue;
     }
 
-    const baseNode = base.nodes.get(nodeId)!;
+    const baseNode = baseEntries.get(nodeId)!.node;
     for (let index = baseNode.childIds.length - 1; index >= 0; index -= 1) {
       stack.push(baseNode.childIds[index]!);
     }
 
-    const targetNode = target.nodes.get(nodeId);
+    const targetNode = targetEntries.get(nodeId)?.node;
     if (!targetNode) {
       sameStructure = false;
       continue;
@@ -433,7 +435,7 @@ function stabilizeReplacementBoundaries<TTypes extends NodeTypeMap>(
   // Promote that boundary until it contains the moved subtree in both trees.
   while (roots.size > 0) {
     const promotions = new Map<NodeId, NodeId>();
-    for (const [nodeId] of base.nodes) {
+    for (const nodeId of base.nodes.keys()) {
       if (
         !target.nodes.has(nodeId) ||
         (base.index.parentById.get(nodeId) ?? null) ===
@@ -1186,7 +1188,7 @@ function collectReplacementRoots<TTypes extends NodeTypeMap>(
   const precomputedThresholds = precomputeThresholds(base, target, options);
 
   if (!skipOwnershipMoveValidation) {
-    for (const [nodeId] of target.nodes) {
+    for (const nodeId of target.nodes.keys()) {
       if (!base.nodes.has(nodeId) || baseState.patchOwned.has(nodeId)) {
         continue;
       }
@@ -1209,7 +1211,7 @@ function collectReplacementRoots<TTypes extends NodeTypeMap>(
   }
 
   if (options.replaceSubtreeWhen !== undefined) {
-    for (const [nodeId] of base.nodes) {
+    for (const nodeId of base.nodes.keys()) {
       const targetNode = target.nodes.get(nodeId);
       if (!targetNode || candidates.has(nodeId)) {
         continue;
@@ -1251,8 +1253,10 @@ function buildPlanningState<TTypes extends NodeTypeMap>(
   const firstChildByParent = new Map<NodeId, NodeId | null>();
   const lastChildByParent = new Map<NodeId, NodeId | null>();
   const mutatedParents = new Set<NodeId>();
-  for (const [parentId, node] of base.nodes) {
-    const childIds = node.childIds.filter((childId) => target.nodes.has(childId));
+  const targetEntries = getTreeState(target).entries;
+  for (const [parentId, entry] of getTreeState(base).entries) {
+    const node = entry.node;
+    const childIds = node.childIds.filter((childId) => targetEntries.has(childId));
     firstChildByParent.set(parentId, childIds[0] ?? null);
     lastChildByParent.set(parentId, childIds.at(-1) ?? null);
     for (let index = 0; index < childIds.length; index += 1) {
@@ -1265,8 +1269,13 @@ function buildPlanningState<TTypes extends NodeTypeMap>(
     }
   }
 
+  const parentById = new Map<NodeId, NodeId | null>();
+  for (const [nodeId, entry] of getTreeState(base).entries) {
+    parentById.set(nodeId, entry.parentId);
+  }
+
   return {
-    parentById: new Map(base.index.parentById),
+    parentById,
     previousById,
     nextById,
     firstChildByParent,
@@ -1598,7 +1607,8 @@ function collectReorderOps<TTypes extends NodeTypeMap>(
 ): ReorderChildrenOp[] {
   const reorders: ReorderChildrenOp[] = [];
   const parentIds: NodeId[] = [];
-  for (const [parentId, targetParent] of context.target.nodes) {
+  for (const [parentId, targetEntry] of context.targetState.entries) {
+    const targetParent = targetEntry.node;
     if (targetParent.childIds.length < 2) {
       continue;
     }

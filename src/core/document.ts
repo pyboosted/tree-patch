@@ -17,7 +17,7 @@ import {
   deepFreezePlainData,
   isPlainObject,
 } from "./snapshot.js";
-import { attachTreeState } from "./state.js";
+import { attachTreeState, createTreeState, type NodeEntry } from "./state.js";
 import { getTreeRevisionHash } from "./hash.js";
 import type { CompiledTreeSchema } from "../schema/schema.js";
 import { compileTreeSchema } from "../schema/schema.js";
@@ -169,10 +169,7 @@ export function createDocument<TTypes extends NodeTypeMap>(
 
   const ownership = options.ownership ?? "clone";
   const schema = compileTreeSchema(options.schema);
-  const nodes = new Map<string, IndexedNode<TTypes>>();
-  const parentById = new Map<string, string | null>();
-  const positionById = new Map<string, number>();
-  const depthById = new Map<string, number>();
+  const entries = new Map<string, NodeEntry<TTypes>>();
   const nodeHashById = new Map<string, string>();
   const subtreeHashById = new Map<string, string>();
   const pathHashByNodeId = new Map<string, Map<JsonPointer, string>>();
@@ -232,10 +229,13 @@ export function createDocument<TTypes extends NodeTypeMap>(
         childIds: Object.freeze(frame.childIds),
       }) as IndexedNode<TTypes>;
 
-      nodes.set(frame.node.id, indexedNode);
-      parentById.set(frame.node.id, frame.parentId);
-      positionById.set(frame.node.id, frame.position);
-      depthById.set(frame.node.id, frame.depth);
+      entries.set(frame.node.id, {
+        node: indexedNode,
+        parentId: frame.parentId,
+        position: frame.position,
+        depth: frame.depth,
+        owner: null,
+      });
       activeNodeObjects.delete(frame.runtimeNodeObject);
       if (frame.parentChildIds === null) {
         rootId = frame.node.id;
@@ -273,10 +273,13 @@ export function createDocument<TTypes extends NodeTypeMap>(
         ) as IndexedNode<TTypes>["attrs"],
         childIds: EMPTY_CHILD_IDS,
       }) as IndexedNode<TTypes>;
-      nodes.set(leafId, leaf);
-      parentById.set(leafId, frame.parentId);
-      positionById.set(leafId, frame.position);
-      depthById.set(leafId, frame.depth);
+      entries.set(leafId, {
+        node: leaf,
+        parentId: frame.parentId,
+        position: frame.position,
+        depth: frame.depth,
+        owner: null,
+      });
       if (frame.parentChildIds === null) {
         rootId = leafId;
       } else {
@@ -312,13 +315,13 @@ export function createDocument<TTypes extends NodeTypeMap>(
   const treeBase = {
     rootId,
     nodes: createReadonlyMapView(
-      nodes,
-      (node) => exposeIndexedNode(schema, ownership, node),
+      entries,
+      (entry) => exposeIndexedNode(schema, ownership, entry.node),
     ),
     index: Object.freeze({
-      parentById: createReadonlyMapView(parentById),
-      positionById: createReadonlyMapView(positionById),
-      depthById: createReadonlyMapView(depthById),
+      parentById: createReadonlyMapView(entries, (entry) => entry.parentId),
+      positionById: createReadonlyMapView(entries, (entry) => entry.position),
+      depthById: createReadonlyMapView(entries, (entry) => entry.depth),
     }),
     cache: Object.freeze({
       nodeHashById: createReadonlyMapView(nodeHashById),
@@ -336,15 +339,11 @@ export function createDocument<TTypes extends NodeTypeMap>(
     ...(metadata !== undefined ? { metadata } : {}),
   } as IndexedTree<TTypes>;
 
-  attachTreeState(tree, {
+  attachTreeState(tree, createTreeState({
     ownership,
     schema,
-    nodes,
-    index: {
-      parentById,
-      positionById,
-      depthById,
-    },
+    entries,
+    entryOwner: null,
     cache: {
       nodeHashById,
       subtreeHashById,
@@ -353,7 +352,7 @@ export function createDocument<TTypes extends NodeTypeMap>(
     },
     explicitHidden: new Set(),
     patchOwned: new Set(),
-  });
+  }));
 
   if (tree.revision === undefined) {
     // Deriving the revision hashes every node, so defer it until first access
