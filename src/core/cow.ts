@@ -14,6 +14,7 @@ class CopyOnWriteMap<TKey, TValue> implements MutableMapLike<TKey, TValue> {
   private readonly writes = new Map<TKey, TValue>();
   private readonly deletes = new Set<TKey>();
   private cleared = false;
+  private storesUndefined = false;
   readonly layerDepth: number;
 
   constructor(private readonly base: ReadonlyMap<TKey, TValue>) {
@@ -70,11 +71,17 @@ class CopyOnWriteMap<TKey, TValue> implements MutableMapLike<TKey, TValue> {
   }
 
   get(key: TKey): TValue | undefined {
-    if (this.writes.has(key)) {
-      return this.writes.get(key);
+    // Reads on lightly patched snapshots mostly miss this layer; resolve the
+    // common case with one lookup per layer instead of has() + get().
+    const written = this.writes.get(key);
+    if (
+      written !== undefined ||
+      (this.storesUndefined && this.writes.has(key))
+    ) {
+      return written;
     }
 
-    if (this.cleared || this.deletes.has(key)) {
+    if (this.cleared || (this.deletes.size !== 0 && this.deletes.has(key))) {
       return undefined;
     }
 
@@ -94,8 +101,13 @@ class CopyOnWriteMap<TKey, TValue> implements MutableMapLike<TKey, TValue> {
   }
 
   set(key: TKey, value: TValue): this {
+    if (value === undefined) {
+      this.storesUndefined = true;
+    }
     this.writes.set(key, value);
-    this.deletes.delete(key);
+    if (this.deletes.size !== 0) {
+      this.deletes.delete(key);
+    }
     return this;
   }
 

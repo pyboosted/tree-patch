@@ -72,11 +72,16 @@ function createRawTreeView<TTypes extends NodeTypeMap>(
 ): IndexedTree<TTypes> {
   const state = getTreeState(tree);
   const rawTree = {
-    ...tree,
+    rootId: tree.rootId,
     nodes: state.nodes,
     index: state.index,
     cache: state.cache,
+    ...(tree.metadata !== undefined ? { metadata: tree.metadata } : {}),
   } as IndexedTree<TTypes>;
+  Object.defineProperty(rawTree, "revision", {
+    enumerable: true,
+    get: () => tree.revision,
+  });
   attachTreeState(rawTree, state);
   return rawTree;
 }
@@ -109,11 +114,35 @@ function analyzeSharedNodes<TTypes extends NodeTypeMap>(
   const baseNodeHashes = getTreeState(base).cache.nodeHashById;
   const targetNodeHashes = getTreeState(target).cache.nodeHashById;
 
-  for (const [nodeId, baseNode] of base.nodes) {
+  // Walk the base tree top-down. Equal subtree hashes imply identical node
+  // ids, order, types, and attrs below that node, so such subtrees are skipped
+  // wholesale. Descendants of a node that is missing or changed in the target
+  // are still visited: they may have moved elsewhere and changed on their own.
+  const stack: NodeId[] = [base.rootId];
+  while (stack.length > 0) {
+    const nodeId = stack.pop()!;
+    const baseSubtreeHash =
+      baseSubtreeHashes.get(nodeId) ?? getSubtreeHash(base, nodeId);
+    let targetSubtreeHash = targetSubtreeHashes.get(nodeId);
+    if (targetSubtreeHash === baseSubtreeHash) {
+      continue;
+    }
+
+    const baseNode = base.nodes.get(nodeId)!;
+    for (let index = baseNode.childIds.length - 1; index >= 0; index -= 1) {
+      stack.push(baseNode.childIds[index]!);
+    }
+
     const targetNode = target.nodes.get(nodeId);
     if (!targetNode) {
       sameStructure = false;
       continue;
+    }
+    if (targetSubtreeHash === undefined) {
+      targetSubtreeHash = getSubtreeHash(target, nodeId);
+      if (targetSubtreeHash === baseSubtreeHash) {
+        continue;
+      }
     }
 
     if (
@@ -129,14 +158,6 @@ function analyzeSharedNodes<TTypes extends NodeTypeMap>(
     }
 
     if (!collectAttrs) {
-      continue;
-    }
-
-    const baseSubtreeHash =
-      baseSubtreeHashes.get(nodeId) ?? getSubtreeHash(base, nodeId);
-    const targetSubtreeHash =
-      targetSubtreeHashes.get(nodeId) ?? getSubtreeHash(target, nodeId);
-    if (baseSubtreeHash === targetSubtreeHash) {
       continue;
     }
 
@@ -282,7 +303,9 @@ function collectNodesCoveredByRoots<TTypes extends NodeTypeMap>(
       continue;
     }
     covered.add(nodeId);
-    stack.push(...node.childIds);
+    for (let index = node.childIds.length - 1; index >= 0; index -= 1) {
+      stack.push(node.childIds[index]!);
+    }
   }
   return covered;
 }
@@ -471,7 +494,9 @@ function computeSubtreeNodeCounts<TTypes extends NodeTypeMap>(
       continue;
     }
     order.push(nodeId);
-    stack.push(...node.childIds);
+    for (let index = node.childIds.length - 1; index >= 0; index -= 1) {
+      stack.push(node.childIds[index]!);
+    }
   }
 
   const counts = new Map<NodeId, number>();
@@ -574,7 +599,9 @@ function computeChangedNodeCounts<TTypes extends NodeTypeMap>(
       continue;
     }
     order.push(nodeId);
-    stack.push(...node.childIds);
+    for (let index = node.childIds.length - 1; index >= 0; index -= 1) {
+      stack.push(node.childIds[index]!);
+    }
   }
 
   const changedCounts = new Map<NodeId, number>();
@@ -591,11 +618,17 @@ function computeChangedNodeCounts<TTypes extends NodeTypeMap>(
       continue;
     }
 
-    let changed =
-      getNodeHash(base, nodeId) !== getNodeHash(target, nodeId) ||
-      !hasSameNodeOrder(baseNode.childIds, targetNode.childIds)
-        ? 1
-        : 0;
+    if (hasSameNodeOrder(baseNode.childIds, targetNode.childIds)) {
+      let changedInPlace =
+        getNodeHash(base, nodeId) !== getNodeHash(target, nodeId) ? 1 : 0;
+      for (let childIndex = 0; childIndex < targetNode.childIds.length; childIndex += 1) {
+        changedInPlace += changedCounts.get(targetNode.childIds[childIndex]!) ?? 0;
+      }
+      changedCounts.set(nodeId, changedInPlace);
+      continue;
+    }
+
+    let changed = 1;
     const baseChildIds = new Set(baseNode.childIds);
     const targetChildIds = new Set(targetNode.childIds);
     for (const childId of new Set([
@@ -733,7 +766,9 @@ function serializeReplacementSubtree<TTypes extends NodeTypeMap>(
       baseDescendants.add(descendantId);
       const descendant = context.base.nodes.get(descendantId);
       if (descendant) {
-        stack.push(...descendant.childIds);
+        for (let index = descendant.childIds.length - 1; index >= 0; index -= 1) {
+          stack.push(descendant.childIds[index]!);
+        }
       }
     }
   }
@@ -1562,21 +1597,28 @@ function collectReorderOps<TTypes extends NodeTypeMap>(
   planning: ReturnType<typeof buildPlanningState<TTypes>>,
 ): ReorderChildrenOp[] {
   const reorders: ReorderChildrenOp[] = [];
-  const parentIds = [...context.target.nodes.keys()].sort(compareStrings);
+  const parentIds: NodeId[] = [];
+  for (const [parentId, targetParent] of context.target.nodes) {
+    if (targetParent.childIds.length < 2) {
+      continue;
+    }
+    const baseParent = context.base.nodes.get(parentId);
+    if (
+      !baseParent ||
+      baseParent.childIds.length !== targetParent.childIds.length ||
+      hasSameNodeOrder(baseParent.childIds, targetParent.childIds)
+    ) {
+      continue;
+    }
+    parentIds.push(parentId);
+  }
+  parentIds.sort(compareStrings);
   for (const parentId of parentIds) {
     if (context.replacementCoveredInTarget.has(parentId)) {
       continue;
     }
-    const baseParent = context.base.nodes.get(parentId);
-    const targetParent = context.target.nodes.get(parentId);
-    if (
-      !baseParent ||
-      !targetParent ||
-      hasSameNodeOrder(baseParent.childIds, targetParent.childIds) ||
-      baseParent.childIds.length !== targetParent.childIds.length
-    ) {
-      continue;
-    }
+    const baseParent = context.base.nodes.get(parentId)!;
+    const targetParent = context.target.nodes.get(parentId)!;
 
     const baseChildIds = new Set(baseParent.childIds);
     if (!targetParent.childIds.every((childId) => baseChildIds.has(childId))) {
@@ -1610,18 +1652,21 @@ function collectAttrOps<TTypes extends NodeTypeMap>(
 ): Array<SetAttrOp | RemoveAttrOp> {
   const ops: Array<SetAttrOp | RemoveAttrOp> = [];
 
-  for (const [nodeId, baseNode] of context.base.nodes) {
+  const stack: NodeId[] = [context.base.rootId];
+  while (stack.length > 0) {
+    const nodeId = stack.pop()!;
     const targetNode = context.target.nodes.get(nodeId);
     if (
-      !targetNode ||
-      context.replacementCoveredInTarget.has(nodeId)
+      targetNode &&
+      getSubtreeHash(context.base, nodeId) === getSubtreeHash(context.target, nodeId)
     ) {
       continue;
     }
-
-    if (
-      getSubtreeHash(context.base, nodeId) === getSubtreeHash(context.target, nodeId)
-    ) {
+    const baseNode = context.base.nodes.get(nodeId)!;
+    for (let index = baseNode.childIds.length - 1; index >= 0; index -= 1) {
+      stack.push(baseNode.childIds[index]!);
+    }
+    if (!targetNode || context.replacementCoveredInTarget.has(nodeId)) {
       continue;
     }
 

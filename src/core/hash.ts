@@ -427,9 +427,25 @@ export function getSubtreeHash<TTypes extends NodeTypeMap>(
     stack.push({ nodeId: frame.nodeId, node, exit: true });
     for (let index = node.childIds.length - 1; index >= 0; index -= 1) {
       const childId = node.childIds[index]!;
-      if (!subtreeCache.has(childId)) {
-        stack.push({ nodeId: childId, node: null, exit: false });
+      if (subtreeCache.has(childId)) {
+        continue;
       }
+      const child = state.nodes.get(childId);
+      if (child !== undefined && child.childIds.length === 0) {
+        // Leaves have no aggregate; hash them in place without frames.
+        const leafHash = versionHash(hashStableParts([
+          "subtree",
+          getNodeHashWithState(tree, state, childId),
+          "0",
+          "",
+        ]));
+        subtreeCache.set(childId, leafHash);
+        if (maintainParentAggregates) {
+          updateCachedParentAggregate(state, childId, leafHash);
+        }
+        continue;
+      }
+      stack.push({ nodeId: childId, node: null, exit: false });
     }
   }
 

@@ -235,9 +235,11 @@ Behavior summary:
 - `atomic` mode stops at the first conflict
 - `preview` mode keeps successful ops and reports skipped conflicts
 
-The nested `result.materialized` view and a changed snapshot's derived
-`tree.revision` are computed on first access and then cached. Callers that only
-need the indexed snapshot do not pay for either full-tree traversal.
+The nested `result.materialized` view and a derived `tree.revision` (both for
+`createDocument()` snapshots without an explicit `revision` and for changed
+snapshots) are computed on first access and then cached. Callers that only need
+the indexed snapshot do not pay for either full-tree traversal; hash caches
+fill lazily as well.
 
 ## Diff and Rebase
 

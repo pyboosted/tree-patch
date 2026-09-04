@@ -45,6 +45,10 @@ function deepTreeInput(size, delta) {
   return { root };
 }
 
+// Derived revisions are lazy; publish trees in setup so diff scenarios measure
+// diffing rather than the deferred first full-tree hash.
+const publish = (tree) => (tree.revision, tree);
+
 const emptyInput = () => ({
   root: { id: "root", type: "Root", attrs: { version: 1 }, children: [] },
 });
@@ -54,8 +58,8 @@ const scenarios = {
   "diff: 100k siblings cold": {
     iterations: 9,
     setup: () => ({
-      base: createDocument(wideTreeInput(100_000, 1)),
-      target: createDocument(wideTreeInput(100_000, 2)),
+      base: publish(createDocument(wideTreeInput(100_000, 1))),
+      target: publish(createDocument(wideTreeInput(100_000, 2))),
     }),
     run: ({ base, target }) => diffTrees(base, target).ops.length,
   },
@@ -82,8 +86,8 @@ const scenarios = {
   "diff: reverse 10k siblings cold": {
     iterations: 15,
     setup: () => ({
-      base: createDocument(wideTreeInput(10_000, 1)),
-      target: createDocument(wideTreeInput(10_000, 1, true)),
+      base: publish(createDocument(wideTreeInput(10_000, 1))),
+      target: publish(createDocument(wideTreeInput(10_000, 1, true))),
     }),
     run: ({ base, target }) => diffTrees(base, target).ops.length,
   },
@@ -99,8 +103,8 @@ const scenarios = {
   "diff: 5k chain ratio threshold cold": {
     iterations: 15,
     setup: () => ({
-      base: createDocument(deepTreeInput(5_000, 0)),
-      target: createDocument(deepTreeInput(5_000, 1)),
+      base: publish(createDocument(deepTreeInput(5_000, 0))),
+      target: publish(createDocument(deepTreeInput(5_000, 1))),
     }),
     run: ({ base, target }) =>
       diffTrees(base, target, { replaceSubtreeWhen: { subtreeChangeRatioGte: 0.5 } })
@@ -128,6 +132,11 @@ const scenarios = {
     iterations: 15,
     setup: () => ({ input: wideTreeInput(100_000, 1) }),
     run: ({ input }) => createDocument(input).nodes.size,
+  },
+  "createDocument+revision: 100k siblings": {
+    iterations: 9,
+    setup: () => ({ input: wideTreeInput(100_000, 1) }),
+    run: ({ input }) => createDocument(input).revision.length,
   },
   "createDocument: 100k-value attrs": {
     iterations: 15,

@@ -217,6 +217,8 @@ test("atomic schema paths are opaque but still change hashes when inner data cha
 test("ordered child aggregates are shared for parent attrs and forked for child edits", () => {
   const source = createDocument<HashTypes>(createHashSource());
   const sourceState = getTreeState(source);
+  // Hash caches fill on first hash access, not in createDocument().
+  getSubtreeHash(source, "root");
   const sourceAggregate = sourceState.cache.childHashByParentId.get("root")!;
   const sourceDigest = sourceAggregate.digest();
 

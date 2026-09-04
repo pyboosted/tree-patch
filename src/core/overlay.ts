@@ -64,9 +64,13 @@ export function createOverlayState<TTypes extends NodeTypeMap>(
       subtreeHashById: state.cache.subtreeHashById,
       pathHashByNodeId: state.cache.pathHashByNodeId,
     },
-    ...(source.revision !== undefined ? { revision: source.revision } : {}),
     ...(source.metadata !== undefined ? { metadata: source.metadata } : {}),
   } as IndexedTree<TTypes>;
+  // Forward the source revision lazily: deriving it hashes the whole tree.
+  Object.defineProperty(treeView, "revision", {
+    enumerable: true,
+    get: () => source.revision,
+  });
 
   state.treeView = treeView;
   attachTreeState(treeView, state);

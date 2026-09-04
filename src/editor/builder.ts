@@ -343,6 +343,7 @@ class PatchBuilderController<TTypes extends NodeTypeMap> {
   private readonly currentTree: IndexedTree<TTypes> | undefined;
   private patchIdValue: string | undefined;
   private baseRevisionValue: string | undefined;
+  private baseRevisionSource: IndexedTree<TTypes> | undefined;
   private metadataValue: JsonObject | undefined;
   private readonly ops: PatchOp[] = [];
   private readonly opIds = createOpIdFactory();
@@ -354,7 +355,8 @@ class PatchBuilderController<TTypes extends NodeTypeMap> {
       : undefined;
     this.currentTree = this.validationSession?.tree ?? options.source;
     this.patchIdValue = options.patchId;
-    this.baseRevisionValue = options.baseRevision ?? options.source?.revision;
+    this.baseRevisionSource = options.baseRevision === undefined ? options.source : undefined;
+    this.baseRevisionValue = options.baseRevision;
     this.metadataValue = cloneMetadata(options.metadata);
   }
 
@@ -363,6 +365,7 @@ class PatchBuilderController<TTypes extends NodeTypeMap> {
   }
 
   setBaseRevision(baseRevision?: string): void {
+    this.baseRevisionSource = undefined;
     this.baseRevisionValue = baseRevision;
   }
 
@@ -775,10 +778,12 @@ class PatchBuilderController<TTypes extends NodeTypeMap> {
       throw new MissingPatchIdError();
     }
 
+    const baseRevision =
+      this.baseRevisionValue ?? this.baseRevisionSource?.revision;
     const patch: TreePatch = {
       format: "tree-patch/v1",
       patchId: this.patchIdValue,
-      ...(this.baseRevisionValue !== undefined ? { baseRevision: this.baseRevisionValue } : {}),
+      ...(baseRevision !== undefined ? { baseRevision } : {}),
       ...(this.metadataValue !== undefined
         ? { metadata: cloneMetadata(this.metadataValue)! }
         : {}),

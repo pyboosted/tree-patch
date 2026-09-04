@@ -32,6 +32,7 @@ import {
 import type { ChildHashAggregate } from "./child-hash.js";
 
 const NODE_ENVELOPE_KEYS = new Set(["id", "type", "attrs", "children"]);
+const EMPTY_CHILD_IDS: readonly string[] = Object.freeze([]);
 
 function cloneMetadata(
   metadata: JsonObject | undefined,
@@ -258,6 +259,31 @@ export function createDocument<TTypes extends NodeTypeMap>(
     }
 
     seenNodeIds.add(frame.node.id);
+    if (frame.node.children.length === 0) {
+      // Leaves need no exit frame; index them immediately.
+      const leafId = frame.node.id;
+      const leaf = Object.freeze({
+        id: leafId,
+        type: frame.node.type,
+        attrs: prepareNodeAttrs(
+          frame.node.type,
+          frame.node.attrs,
+          ownership,
+          schema,
+        ) as IndexedNode<TTypes>["attrs"],
+        childIds: EMPTY_CHILD_IDS,
+      }) as IndexedNode<TTypes>;
+      nodes.set(leafId, leaf);
+      parentById.set(leafId, frame.parentId);
+      positionById.set(leafId, frame.position);
+      depthById.set(leafId, frame.depth);
+      if (frame.parentChildIds === null) {
+        rootId = leafId;
+      } else {
+        frame.parentChildIds[frame.position] = leafId;
+      }
+      continue;
+    }
     activeNodeObjects.add(runtimeNodeObject);
     const childIds = new Array<string>(frame.node.children.length);
     stack.push({
@@ -330,9 +356,17 @@ export function createDocument<TTypes extends NodeTypeMap>(
   });
 
   if (tree.revision === undefined) {
+    // Deriving the revision hashes every node, so defer it until first access
+    // (the same contract applied snapshots already follow).
+    let cachedRevision: string | undefined;
     Object.defineProperty(tree, "revision", {
       enumerable: true,
-      value: getTreeRevisionHash(tree),
+      get(): string {
+        if (cachedRevision === undefined) {
+          cachedRevision = getTreeRevisionHash(tree);
+        }
+        return cachedRevision;
+      },
     });
   }
 

@@ -85,11 +85,29 @@ export function parseJsonPointer(pointer: string): readonly string[] {
     );
   }
 
-  return pointer
-    .slice(1)
-    .split("/")
-    .map((segment) => decodePointerSegment(segment, pointer));
+  const cached = parsedPointerCache.get(pointer);
+  if (cached !== undefined) {
+    return cached;
+  }
+
+  const segments = pointer.slice(1).split("/");
+  if (pointer.indexOf("~") !== -1) {
+    for (let index = 0; index < segments.length; index += 1) {
+      segments[index] = decodePointerSegment(segments[index]!, pointer);
+    }
+  }
+  Object.freeze(segments);
+  if (parsedPointerCache.size >= PARSED_POINTER_CACHE_LIMIT) {
+    parsedPointerCache.clear();
+  }
+  parsedPointerCache.set(pointer, segments);
+  return segments;
 }
+
+// Patches repeat the same pointers across ops, guards, validation, and apply;
+// parsed segments are frozen so a shared array is safe to hand out.
+const PARSED_POINTER_CACHE_LIMIT = 4096;
+const parsedPointerCache = new Map<string, readonly string[]>();
 
 export function isCanonicalArrayIndexToken(segment: string): boolean {
   return CANONICAL_ARRAY_INDEX.test(segment);

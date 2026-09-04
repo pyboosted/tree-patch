@@ -72,12 +72,16 @@ function emptyTree() {
   });
 }
 
-const wideBase = wideTree(100_000, 1);
-const wideTarget = wideTree(100_000, 2);
-const reorderBase = wideTree(10_000, 1);
-const reorderTarget = wideTree(10_000, 1, true);
-const thresholdBase = deepTree(5_000, 0);
-const thresholdTarget = deepTree(5_000, 1);
+// Derived revisions (and the hash caches behind them) are computed lazily, so
+// publish each tree once here; the rows below measure diff/apply, not the
+// first full-tree hash.
+const publish = (tree) => (tree.revision, tree);
+const wideBase = publish(wideTree(100_000, 1));
+const wideTarget = publish(wideTree(100_000, 2));
+const reorderBase = publish(wideTree(10_000, 1));
+const reorderTarget = publish(wideTree(10_000, 1, true));
+const thresholdBase = publish(deepTree(5_000, 0));
+const thresholdTarget = publish(deepTree(5_000, 1));
 const bagTree = (offset, size = 1_000) => createDocument({
   root: {
     id: "bag",
@@ -91,13 +95,13 @@ const bagTree = (offset, size = 1_000) => createDocument({
     children: [],
   },
 });
-const largeBagBase = bagTree(0, 4_000);
-const largeBagTarget = bagTree(1, 4_000);
-const largeBagConflictBase = bagTree(2, 4_000);
-const insertionBase = emptyTree();
-const insertionTarget = wideTree(8_000, 1);
-const deepApplyBase = deepTree(4_000, 0);
-const deepApplyTarget = deepTree(4_000, 1);
+const largeBagBase = publish(bagTree(0, 4_000));
+const largeBagTarget = publish(bagTree(1, 4_000));
+const largeBagConflictBase = publish(bagTree(2, 4_000));
+const insertionBase = publish(emptyTree());
+const insertionTarget = publish(wideTree(8_000, 1));
+const deepApplyBase = publish(deepTree(4_000, 0));
+const deepApplyTarget = publish(deepTree(4_000, 1));
 const largeValueTree = createDocument({
   revision: "external",
   root: {
@@ -156,7 +160,7 @@ rows.push(measure("diff: 5k chain ratio threshold", () =>
   diffTrees(thresholdBase, thresholdTarget, {
     replaceSubtreeWhen: { subtreeChangeRatioGte: 0.5 },
   }).ops.length));
-const resolutionOldBase = bagTree(0);
+const resolutionOldBase = publish(bagTree(0));
 const resolutionPatch = diffTrees(resolutionOldBase, bagTree(1));
 const resolution = createResolutionSession(
   resolutionOldBase,

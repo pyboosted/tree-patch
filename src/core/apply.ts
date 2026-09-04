@@ -377,11 +377,40 @@ function computeRevisionStatus(
   source: IndexedTree<NodeTypeMap>,
   patch: TreePatch,
 ): RevisionStatus {
-  const sourceRevision = source.revision;
   const patchBaseRevision = patch.baseRevision;
+  if (patchBaseRevision === undefined) {
+    // Nothing to compare against. A derived source revision costs a full-tree
+    // hash, so expose it lazily instead of forcing it on every apply.
+    const revision: RevisionStatus = { status: "unknown" };
+    Object.defineProperty(revision, "sourceRevision", {
+      enumerable: true,
+      configurable: true,
+      get(): string | undefined {
+        const sourceRevision = source.revision;
+        Object.defineProperty(revision, "sourceRevision", {
+          enumerable: true,
+          configurable: true,
+          writable: true,
+          value: sourceRevision,
+        });
+        return sourceRevision;
+      },
+      set(value: string | undefined) {
+        Object.defineProperty(revision, "sourceRevision", {
+          enumerable: true,
+          configurable: true,
+          writable: true,
+          value,
+        });
+      },
+    });
+    return revision;
+  }
+
+  const sourceRevision = source.revision;
   const revision: RevisionStatus = {
     status:
-      sourceRevision === undefined || patchBaseRevision === undefined
+      sourceRevision === undefined
         ? "unknown"
         : sourceRevision === patchBaseRevision
           ? "match"
@@ -391,9 +420,7 @@ function computeRevisionStatus(
   if (sourceRevision !== undefined) {
     revision.sourceRevision = sourceRevision;
   }
-  if (patchBaseRevision !== undefined) {
-    revision.patchBaseRevision = patchBaseRevision;
-  }
+  revision.patchBaseRevision = patchBaseRevision;
 
   return revision;
 }
@@ -2293,9 +2320,31 @@ function buildMaterializedTree<TTypes extends NodeTypeMap>(
     };
     stack.push(exitFrame);
     for (let index = node.childIds.length - 1; index >= 0; index -= 1) {
+      const childId = node.childIds[index]!;
+      const child = nodes.get(childId);
+      if (child !== undefined && child.childIds.length === 0) {
+        // Leaves are materialized in place; no frame round-trip needed.
+        const childExplicitlyHidden =
+          checkExplicitHidden && explicitHiddenSet.has(childId);
+        const childHidden = hidden || childExplicitlyHidden;
+        if (childHidden && !includeHidden) {
+          exitFrame.hasNullChild = true;
+          children[index] = null;
+        } else {
+          children[index] = materializeNode(
+            state,
+            child,
+            [],
+            childHidden,
+            childExplicitlyHidden,
+            checkPatchOwned && patchOwnedSet.has(childId),
+          );
+        }
+        continue;
+      }
       stack.push({
         kind: "enter",
-        nodeId: node.childIds[index]!,
+        nodeId: childId,
         ancestorHidden: hidden,
         parent: exitFrame,
         parentIndex: index,
